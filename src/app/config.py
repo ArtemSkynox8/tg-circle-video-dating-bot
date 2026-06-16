@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -41,13 +42,16 @@ def _database_url() -> str:
     name = os.getenv("DATABASE_NAME", "default_db").strip()
     sslmode = os.getenv("DATABASE_SSLMODE", "").strip()
     sslrootcert = os.getenv("PGSSLROOTCERT", "").strip()
+    sslrootcert_exists = bool(sslrootcert and Path(sslrootcert).is_file())
+    if sslmode in {"verify-ca", "verify-full"} and not sslrootcert_exists:
+        sslmode = "require"
 
     auth = quote(user, safe="") + ":" + quote(password, safe="")
     url = f"postgresql://{auth}@{host}:{port}/{name}"
     query: list[str] = []
     if sslmode:
         query.append("sslmode=" + quote(sslmode, safe=""))
-    if sslrootcert:
+    if sslrootcert_exists:
         query.append("sslrootcert=" + quote(sslrootcert, safe="/"))
     if query:
         url += "?" + "&".join(query)
