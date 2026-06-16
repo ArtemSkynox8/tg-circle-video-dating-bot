@@ -387,6 +387,8 @@ class DatingService:
                 inline_keyboard=keyboards.subscription(),
             )
             return
+        bot_username = await self.tg.username()
+        offer_url = self.bot_deep_link(bot_username, "offer")
         await self.tg.send_message(
             user["chat_id"],
             "\n".join(
@@ -398,17 +400,21 @@ class DatingService:
                     "• возможность писать первым без взаимного лайка;",
                     "• неограниченный просмотр кружков.",
                     "",
-                    "Варианты:",
+                    "Подписка с автосписанием:",
+                    "• 🎁 Пригласить друга — получить 1 рандомный контакт из последних 10 кружков;",
                     "• 🎲 Открыть рандомный контакт — если у вас есть бонус;",
                     "• 🔥 49 ₽ / 3 дня;",
                     "• 💎 199 ₽ / неделя.",
                     "",
-                    "Переходя к оплате, вы соглашаетесь с офертой.",
+                    f'Переходя к оплате, вы соглашаетесь с <a href="{offer_url}">офертой</a>.',
+                    "",
+                    "Подписка с автосписанием:",
                     "",
                     "Оплата пока подключается.",
                 ]
             ),
             inline_keyboard=keyboards.subscription(),
+            parse_mode="HTML",
         )
 
     async def send_invite_friend(self, user: asyncpg.Record) -> None:
@@ -441,7 +447,6 @@ class DatingService:
     async def open_random_contact(self, user: asyncpg.Record) -> None:
         fresh = await self.repo.get_user(user["id"])
         if not fresh or fresh["referral_contact_credits"] <= 0:
-            await self.tg.send_message(user["chat_id"], "Пока нет доступных бонусных контактов.", inline_keyboard=keyboards.subscription())
             await self.send_invite_friend(user)
             return
         candidate = await self.repo.random_contact_candidate(user["id"])
@@ -449,7 +454,7 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "Сейчас нет контактов для открытия. Попробуйте позже.", inline_keyboard=keyboards.main_menu())
             return
         if not await self.repo.consume_referral_credit(user["id"], candidate["owner_id"]):
-            await self.tg.send_message(user["chat_id"], "Пока нет доступных бонусных контактов.", inline_keyboard=keyboards.subscription())
+            await self.send_invite_friend(user)
             return
         if WHEEL_VIDEO_PATH.is_file():
             await self.tg.send_video_file(user["chat_id"], WHEEL_VIDEO_PATH)
