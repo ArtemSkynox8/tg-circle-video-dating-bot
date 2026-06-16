@@ -158,7 +158,11 @@ class TelegramClient:
         )
 
     async def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
-        await self.call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
+        try:
+            await self.call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
+        except httpx.HTTPStatusError:
+            # Telegram callback IDs expire quickly. The user action should still run.
+            return
 
 
 def button(text: str, callback_data: str | None = None, url: str | None = None) -> dict[str, Any]:

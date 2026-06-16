@@ -399,14 +399,11 @@ class DatingService:
                     "• неограниченный просмотр кружков.",
                     "",
                     "Варианты:",
-                    "• 🎁 Пригласить друга — получить 1 рандомный контакт из последних 10 кружков;",
                     "• 🎲 Открыть рандомный контакт — если у вас есть бонус;",
                     "• 🔥 49 ₽ / 3 дня;",
                     "• 💎 199 ₽ / неделя.",
                     "",
                     "Переходя к оплате, вы соглашаетесь с офертой.",
-                    "",
-                    "Пригласите друга: если он придет по вашей ссылке, зарегистрируется и посмотрит хотя бы один кружок, вам станет доступен один рандомный контакт.",
                     "",
                     "Оплата пока подключается.",
                 ]
@@ -445,6 +442,7 @@ class DatingService:
         fresh = await self.repo.get_user(user["id"])
         if not fresh or fresh["referral_contact_credits"] <= 0:
             await self.tg.send_message(user["chat_id"], "Пока нет доступных бонусных контактов.", inline_keyboard=keyboards.subscription())
+            await self.send_invite_friend(user)
             return
         candidate = await self.repo.random_contact_candidate(user["id"])
         if not candidate:

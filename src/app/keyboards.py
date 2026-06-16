@@ -96,7 +96,6 @@ def match_actions(matched_user_id: int, can_get_contact: bool, url: str | None) 
 
 def subscription() -> list[list[dict]]:
     return [
-        [button("🎁 Пригласить друга", "invite_friend")],
         [button("🎲 Открыть рандомный контакт", "open_random_contact")],
         [button("🔥 49 ₽ / 3 дня", "premium_3_days")],
         [button("💎 199 ₽ / неделя", "premium_week")],
