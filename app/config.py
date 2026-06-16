@@ -12,6 +12,7 @@ class Settings:
     webhook_secret: str
     public_base_url: str
     database_url: str
+    database_schema: str
     http_host: str
     http_port: int
     admin_telegram_ids: set[int]
@@ -35,11 +36,11 @@ def load_settings() -> Settings:
         public_base_url=os.getenv("PUBLIC_BASE_URL", "http://localhost:8080").rstrip("/"),
         database_url=os.getenv(
             "DATABASE_URL",
-            "postgresql://postgres:postgres@localhost:5432/tg_dating_bot",
+            "postgresql://postgres:postgres@localhost:5432/default_db",
         ),
+        database_schema=os.getenv("DATABASE_SCHEMA", "tg_circle_video_dating_bot").strip(),
         http_host=os.getenv("HTTP_HOST", "0.0.0.0"),
         http_port=int(os.getenv("HTTP_PORT", "8080")),
         admin_telegram_ids=_int_set(os.getenv("ADMIN_TELEGRAM_IDS", "")),
         premium_price=os.getenv("PREMIUM_PRICE", "199").strip(),
     )
-

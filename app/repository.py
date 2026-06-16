@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import asyncpg
 
+SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 MIGRATION_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -66,8 +68,23 @@ class Repository:
         self.pool = pool
 
     @classmethod
-    async def connect(cls, database_url: str) -> "Repository":
-        pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10)
+    async def connect(cls, database_url: str, schema: str) -> "Repository":
+        schema = schema.strip()
+        if not SCHEMA_RE.fullmatch(schema):
+            raise ValueError("DATABASE_SCHEMA must contain only lowercase letters, digits, and underscores")
+
+        setup_conn = await asyncpg.connect(database_url)
+        try:
+            await setup_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        finally:
+            await setup_conn.close()
+
+        pool = await asyncpg.create_pool(
+            database_url,
+            min_size=1,
+            max_size=10,
+            server_settings={"search_path": f"{schema},public"},
+        )
         repo = cls(pool)
         async with pool.acquire() as conn:
             await conn.execute(MIGRATION_SQL)
@@ -275,4 +292,3 @@ class Repository:
     async def list_users(self, limit: int = 20) -> list[asyncpg.Record]:
         async with self.pool.acquire() as conn:
             return await conn.fetch("SELECT * FROM users ORDER BY id DESC LIMIT $1", limit)
-

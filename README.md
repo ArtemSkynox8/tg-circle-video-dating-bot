@@ -29,6 +29,9 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=...
 WEBHOOK_SECRET=...
 PUBLIC_BASE_URL=https://your-domain.example
+DATABASE_URL=postgresql://gen_user:password@host:5432/default_db?sslmode=verify-full
+DATABASE_SCHEMA=tg_circle_video_dating_bot
+PGSSLROOTCERT=/app/.cloud-certs/root.crt
 ADMIN_TELEGRAM_IDS=123456789
 ```
 
@@ -52,6 +55,10 @@ GET /healthz
 
 Если `PUBLIC_BASE_URL` начинается с `https://`, бот при старте сам вызывает `setWebhook` и `setMyCommands`.
 
+## PostgreSQL schema
+
+Бот рассчитан на общий PostgreSQL-инстанс и отдельную схему. При старте он выполнит `CREATE SCHEMA IF NOT EXISTS` для значения `DATABASE_SCHEMA`, выставит `search_path` для пула соединений и создаст таблицы внутри этой схемы. Так можно использовать ту же базу `default_db`, что и у других проектов, без смешивания таблиц.
+
 ## Основные команды
 
 - `/start` - регистрация или главное меню
@@ -65,4 +72,3 @@ GET /healthz
 ## Важное про токен
 
 Не коммитьте реальный токен в репозиторий. Храните его только в `.env` или переменных окружения сервера.
-

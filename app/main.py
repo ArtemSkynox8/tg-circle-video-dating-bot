@@ -28,7 +28,7 @@ state = AppState()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     state.settings = load_settings()
-    state.repo = await Repository.connect(state.settings.database_url)
+    state.repo = await Repository.connect(state.settings.database_url, state.settings.database_schema)
     state.tg = TelegramClient(state.settings.telegram_bot_token)
     state.service = DatingService(
         state.repo,
@@ -81,4 +81,3 @@ async def telegram_webhook(
         logger.exception("failed to handle update")
         raise HTTPException(status_code=500, detail="handler error") from None
     return {"status": "ok"}
-
