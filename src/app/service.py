@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
+from urllib.parse import quote
 
 import asyncpg
 
@@ -16,6 +18,7 @@ STATE_AWAITING_PREFERRED = "awaiting_preferred_gender"
 STATE_AWAITING_VIDEO = "awaiting_video"
 STATE_AWAITING_REWRITE_VIDEO = "awaiting_rewrite_video"
 STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
+MATCHES_PAGE_SIZE = 10
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
 NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
@@ -45,7 +48,11 @@ class DatingService:
         text = (message.get("text") or "").strip()
 
         if text.startswith("/start"):
-            await self.start(user)
+            payload = text.removeprefix("/start").strip()
+            if payload:
+                await self.handle_start_payload(user, payload)
+            else:
+                await self.start(user)
         elif text in {"/commands", "/help"}:
             await self.send_commands(user)
         elif text == "/browse":
@@ -109,6 +116,8 @@ class DatingService:
                 await self.report_video(user, int(parts[1]), int(parts[2]), ":".join(parts[3:]))
             case "matches":
                 await self.send_matches(user)
+            case "matches_page" if len(parts) == 2:
+                await self.send_matches(user, int(parts[1]))
             case "match_contact" if len(parts) == 2:
                 await self.send_match_contact(user, int(parts[1]))
             case "match_video" if len(parts) == 2:
@@ -261,14 +270,43 @@ class DatingService:
         await self.tg.send_message(user["chat_id"], f"🎉 Взаимный лайк с {display_name(other)}!", inline_keyboard=self.contact_keyboard(user, other))
         await self.tg.send_message(other["chat_id"], f"🎉 Взаимный лайк с {display_name(user)}!", inline_keyboard=self.contact_keyboard(other, user))
 
-    async def send_matches(self, user: asyncpg.Record) -> None:
-        matches = await self.repo.matches(user["id"])
+    async def send_matches(self, user: asyncpg.Record, page: int = 0) -> None:
+        page = max(page, 0)
+        total = await self.repo.matches_count(user["id"])
+        matches = await self.repo.matches(user["id"], MATCHES_PAGE_SIZE, page * MATCHES_PAGE_SIZE)
         if not matches:
             await self.tg.send_message(user["chat_id"], "Взаимных лайков пока нет.", inline_keyboard=keyboards.main_menu())
             return
-        await self.tg.send_message(user["chat_id"], "Ваши взаимные лайки:")
+        await self.tg.send_message(
+            user["chat_id"],
+            await self.render_matches_html(matches),
+            inline_keyboard=keyboards.matches_page(page, total, MATCHES_PAGE_SIZE),
+            parse_mode="HTML",
+        )
+
+    async def render_matches_html(self, matches: list[asyncpg.Record]) -> str:
+        bot_username = await self.tg.username()
+        lines = ["📬 <b>Взаимные лайки:</b>", ""]
         for match in matches:
-            await self.tg.send_message(user["chat_id"], display_name(match), inline_keyboard=self.contact_keyboard(user, match))
+            name = html.escape(display_name(match))
+            video_url = self.profile_url(match, bot_username)
+            write_url = self.write_url(match)
+            report_url = self.bot_deep_link(bot_username, f"report_user_{match['id']}")
+            lines.append(
+                f'{name} | 🎥 <a href="{video_url}">Посмотреть кружок</a> | '
+                f'💬 <a href="{write_url}">Написать</a> | '
+                f'❌ <a href="{report_url}">Пожаловаться</a>'
+            )
+        return "\n".join(lines)
+
+    async def handle_start_payload(self, user: asyncpg.Record, payload: str) -> None:
+        if payload.startswith("match_video_"):
+            await self.send_match_video(user, parse_payload_id(payload, "match_video_"))
+        elif payload.startswith("report_user_"):
+            matched_user_id = parse_payload_id(payload, "report_user_")
+            await self.tg.send_message(user["chat_id"], "Выберите причину жалобы:", inline_keyboard=keyboards.user_report(matched_user_id))
+        else:
+            await self.start(user)
 
     async def send_match_contact(self, user: asyncpg.Record, matched_user_id: int) -> None:
         other = await self.repo.get_user(matched_user_id)
@@ -392,6 +430,21 @@ class DatingService:
         can_get_contact = bool(user["is_premium"])
         return keyboards.match_actions(other["id"], can_get_contact, url)
 
+    def profile_url(self, user: asyncpg.Record, bot_username: str) -> str:
+        return self.bot_deep_link(bot_username, f"match_video_{user['id']}")
+
+    @staticmethod
+    def bot_deep_link(bot_username: str, payload: str) -> str:
+        if not bot_username:
+            return "https://t.me/"
+        return f"https://t.me/{bot_username}?start={quote(payload, safe='')}"
+
+    @staticmethod
+    def write_url(user: asyncpg.Record) -> str:
+        if user["username"]:
+            return f"https://t.me/{quote(user['username'], safe='')}"
+        return f"tg://user?id={user['telegram_id']}"
+
     def is_admin(self, user: asyncpg.Record) -> bool:
         return int(user["telegram_id"]) in self.admin_ids
 
@@ -403,3 +456,9 @@ class DatingService:
 def display_name(user: asyncpg.Record) -> str:
     return user["name"] or user["first_name"] or (f"@{user['username']}" if user["username"] else str(user["telegram_id"]))
 
+
+def parse_payload_id(payload: str, prefix: str) -> int:
+    try:
+        return int(payload.removeprefix(prefix))
+    except ValueError:
+        return 0

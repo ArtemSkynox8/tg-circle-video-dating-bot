@@ -232,7 +232,7 @@ class Repository:
                 )
             )
 
-    async def matches(self, user_id: int, limit: int = 20) -> list[asyncpg.Record]:
+    async def matches(self, user_id: int, limit: int = 10, offset: int = 0) -> list[asyncpg.Record]:
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
@@ -252,10 +252,37 @@ class Repository:
                     WHERE a.from_user_id = u.id AND a.to_user_id = $1 AND a.action IN ('like', 'like_only')
                   )
                 ORDER BY u.updated_at DESC
-                LIMIT $2
+                LIMIT $2 OFFSET $3
                 """,
                 user_id,
                 limit,
+                offset,
+            )
+
+    async def matches_count(self, user_id: int) -> int:
+        async with self.pool.acquire() as conn:
+            return int(
+                await conn.fetchval(
+                    """
+                    SELECT count(*)
+                    FROM users u
+                    WHERE u.id <> $1
+                      AND NOT EXISTS (
+                        SELECT 1 FROM hidden_matches h
+                        WHERE h.user_id = $1 AND h.matched_user_id = u.id
+                      )
+                      AND EXISTS (
+                        SELECT 1 FROM actions a
+                        WHERE a.from_user_id = $1 AND a.to_user_id = u.id AND a.action IN ('like', 'like_only')
+                      )
+                      AND EXISTS (
+                        SELECT 1 FROM actions a
+                        WHERE a.from_user_id = u.id AND a.to_user_id = $1 AND a.action IN ('like', 'like_only')
+                      )
+                    """,
+                    user_id,
+                )
+                or 0
             )
 
     async def hide_match(self, user_id: int, matched_user_id: int) -> None:

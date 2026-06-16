@@ -12,6 +12,18 @@ def main_menu() -> list[list[dict]]:
     ]
 
 
+def matches_page(page: int, total: int, page_size: int = 10) -> list[list[dict]]:
+    buttons: list[dict] = []
+    if page > 0:
+        buttons.append(button("⬅️ Предыдущие 10", f"matches_page:{page - 1}"))
+    if (page + 1) * page_size < total:
+        buttons.append(button("Следующие 10 ➡️", f"matches_page:{page + 1}"))
+    rows = [buttons] if buttons else []
+    rows.append([button("▶️ Продолжить просмотр", "browse")])
+    rows.append([button("☰ Главное меню", "main_menu")])
+    return rows
+
+
 def gender() -> list[list[dict]]:
     return [[button("Мужской", "gender:male"), button("Женский", "gender:female")]]
 
@@ -77,4 +89,3 @@ def match_actions(matched_user_id: int, can_get_contact: bool, url: str | None) 
 
 def subscription() -> list[list[dict]]:
     return [[button("💎 Оплатить Premium", "premium_pay_stub")], [button("☰ Главное меню", "main_menu")]]
-

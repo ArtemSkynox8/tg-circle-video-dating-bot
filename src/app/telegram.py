@@ -10,6 +10,7 @@ class TelegramClient:
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.client = httpx.AsyncClient(timeout=20)
+        self._username: str | None = None
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -50,6 +51,13 @@ class TelegramClient:
             },
         )
 
+    async def username(self) -> str:
+        if self._username:
+            return self._username
+        data = await self.call("getMe", {})
+        self._username = data.get("result", {}).get("username") or ""
+        return self._username
+
     async def send_message(
         self,
         chat_id: int,
@@ -57,12 +65,15 @@ class TelegramClient:
         *,
         inline_keyboard: list[list[dict[str, Any]]] | None = None,
         reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
     ) -> int | None:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if inline_keyboard is not None:
             payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
         elif reply_markup is not None:
@@ -140,4 +151,3 @@ def request_contact_markup() -> dict[str, Any]:
 
 def remove_keyboard() -> dict[str, Any]:
     return {"remove_keyboard": True}
-
