@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_contact_credits INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_rewarded_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -58,6 +62,13 @@ CREATE TABLE IF NOT EXISTS reports (
     target_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     video_id BIGINT REFERENCES videos(id) ON DELETE SET NULL,
     reason TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS referral_contact_opens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    opened_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 """
@@ -142,6 +153,20 @@ class Repository:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = $2, updated_at = now() WHERE id = $1", user_id, is_premium)
 
+    async def set_referrer(self, user_id: int, referrer_user_id: int) -> None:
+        if user_id == referrer_user_id:
+            return
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE users
+                SET referrer_user_id = $2, updated_at = now()
+                WHERE id = $1 AND referrer_user_id IS NULL
+                """,
+                user_id,
+                referrer_user_id,
+            )
+
     async def save_video(self, user_id: int, file_id: str, media_type: str, duration: int, active: bool) -> asyncpg.Record:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -216,6 +241,40 @@ class Repository:
                 video_id,
                 action,
             )
+
+    async def reset_browse(self, user_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM actions WHERE from_user_id = $1 AND action = 'next'", user_id)
+
+    async def complete_referral_if_needed(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user = await conn.fetchrow(
+                    """
+                    SELECT referrer_user_id, referral_rewarded_at
+                    FROM users
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    user_id,
+                )
+                if not user or not user["referrer_user_id"] or user["referral_rewarded_at"]:
+                    return None
+                referrer = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET referral_contact_credits = referral_contact_credits + 1,
+                        updated_at = now()
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    user["referrer_user_id"],
+                )
+                await conn.execute(
+                    "UPDATE users SET referral_rewarded_at = now(), updated_at = now() WHERE id = $1",
+                    user_id,
+                )
+                return referrer
 
     async def mutual_like(self, user_id: int, other_id: int) -> bool:
         async with self.pool.acquire() as conn:
@@ -302,6 +361,66 @@ class Repository:
                 video_id,
                 reason,
             )
+
+    async def random_contact_candidate(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                WITH latest AS (
+                    SELECT
+                        u.id AS owner_id, u.telegram_id, u.chat_id, u.username, u.first_name,
+                        u.name, u.contact_phone, v.file_id, v.media_type, v.created_at
+                    FROM videos v
+                    JOIN users u ON u.id = v.user_id
+                    WHERE v.is_active = TRUE
+                      AND u.id <> $1
+                      AND u.status = 'active'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM referral_contact_opens o
+                        WHERE o.user_id = $1 AND o.opened_user_id = u.id
+                      )
+                    ORDER BY v.created_at DESC
+                    LIMIT 10
+                )
+                SELECT * FROM latest
+                ORDER BY random()
+                LIMIT 1
+                """,
+                user_id,
+            )
+
+    async def consume_referral_credit(self, user_id: int, opened_user_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                credits = await conn.fetchval(
+                    "SELECT referral_contact_credits FROM users WHERE id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if not credits or credits <= 0:
+                    return False
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET referral_contact_credits = referral_contact_credits - 1,
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO referral_contact_opens (user_id, opened_user_id)
+                    VALUES ($1, $2)
+                    """,
+                    user_id,
+                    opened_user_id,
+                )
+                return True
+
+    async def reset_all(self) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("TRUNCATE referral_contact_opens, reports, hidden_matches, actions, videos, users RESTART IDENTITY CASCADE")
 
     async def stats(self) -> dict[str, int]:
         async with self.pool.acquire() as conn:

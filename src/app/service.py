@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -20,6 +22,7 @@ STATE_AWAITING_REWRITE_VIDEO = "awaiting_rewrite_video"
 STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
+WHEEL_VIDEO_PATH = Path(__file__).resolve().parents[1] / "assets" / "fortune-wheel" / "wheel.mp4"
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
 NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
@@ -72,6 +75,9 @@ class DatingService:
             await self.send_admin(user)
         elif text == "/botstats" and self.is_admin(user):
             await self.send_stats(user)
+        elif text == "/admin_reset_store confirm" and self.is_admin(user):
+            await self.repo.reset_all()
+            await self.tg.send_message(user["chat_id"], "База очищена.")
         elif text.startswith("/user ") and self.is_admin(user):
             await self.send_user_card(user, text.removeprefix("/user ").strip())
         elif contact := message.get("contact"):
@@ -103,6 +109,10 @@ class DatingService:
 
         match parts[0]:
             case "browse":
+                await self.send_next_candidate(user)
+            case "reset_browse":
+                await self.repo.reset_browse(user["id"])
+                await self.tg.send_message(user["chat_id"], "Показываю кружки заново.")
                 await self.send_next_candidate(user)
             case "gender" if len(parts) == 2:
                 await self.save_gender(user, parts[1])
@@ -156,6 +166,16 @@ class DatingService:
                 await self.tg.send_message(chat_id, "Главное меню:", inline_keyboard=keyboards.main_menu())
             case "premium" | "subscription" | "premium_pay_stub":
                 await self.send_subscription(user)
+            case "premium_3_days":
+                await self.send_payment_stub(user, "49 ₽ / 3 дня")
+            case "premium_week":
+                await self.send_payment_stub(user, "199 ₽ / неделя")
+            case "invite_friend":
+                await self.send_invite_friend(user)
+            case "open_random_contact":
+                await self.open_random_contact(user)
+            case "offer":
+                await self.send_offer(user)
             case "admin" if self.is_admin(user):
                 await self.handle_admin(user, parts)
 
@@ -242,7 +262,11 @@ class DatingService:
             return
         candidate = await self.repo.next_candidate(fresh)
         if not candidate:
-            await self.tg.send_message(fresh["chat_id"], "Пока нет новых анкет. Загляните позже.", inline_keyboard=keyboards.main_menu())
+            await self.tg.send_message(
+                fresh["chat_id"],
+                "Кружки закончились. Вернитесь попозже или посмотрите кружки заново.",
+                inline_keyboard=keyboards.circles_finished(),
+            )
             return
         caption = f"{candidate['name']}\nПол: {GENDER_LABELS.get(candidate['gender'], candidate['gender'])}"
         await self.tg.send_message(fresh["chat_id"], caption)
@@ -262,6 +286,7 @@ class DatingService:
                 await self.tg.send_message(user["chat_id"], "Лайк отправлен.", inline_keyboard=keyboards.main_menu())
         elif action == "next":
             await self.repo.record_action(user["id"], owner_id, video_id, "next")
+        await self.complete_referral(user)
         await self.send_next_candidate(user)
 
     async def announce_match(self, user: asyncpg.Record, owner_id: int) -> None:
@@ -306,6 +331,11 @@ class DatingService:
         elif payload.startswith("report_user_"):
             matched_user_id = parse_payload_id(payload, "report_user_")
             await self.tg.send_message(user["chat_id"], "Выберите причину жалобы:", inline_keyboard=keyboards.user_report(matched_user_id))
+        elif payload.startswith("ref_"):
+            referrer_id = parse_payload_id(payload, "ref_")
+            if referrer_id:
+                await self.repo.set_referrer(user["id"], referrer_id)
+            await self.start(user)
         else:
             await self.start(user)
 
@@ -359,7 +389,106 @@ class DatingService:
             return
         await self.tg.send_message(
             user["chat_id"],
-            f"💎 Подписка Premium\n\nСтоимость: {self.premium_price} ₽.\n\nЧто входит:\n• доступ к контактам пользователей;\n• возможность писать первым без взаимного лайка;\n• неограниченный просмотр кружков.\n\nОплата пока подключается.",
+            "\n".join(
+                [
+                    "💎 Подписка Premium",
+                    "",
+                    "Что входит:",
+                    "• доступ к контактам пользователей;",
+                    "• возможность писать первым без взаимного лайка;",
+                    "• неограниченный просмотр кружков.",
+                    "",
+                    "Варианты:",
+                    "• 🎁 Пригласить друга — получить 1 рандомный контакт из последних 10 кружков;",
+                    "• 🎲 Открыть рандомный контакт — если у вас есть бонус;",
+                    "• 🔥 49 ₽ / 3 дня;",
+                    "• 💎 199 ₽ / неделя.",
+                    "",
+                    "Переходя к оплате, вы соглашаетесь с офертой.",
+                    "",
+                    "Пригласите друга: если он придет по вашей ссылке, зарегистрируется и посмотрит хотя бы один кружок, вам станет доступен один рандомный контакт.",
+                    "",
+                    "Оплата пока подключается.",
+                ]
+            ),
+            inline_keyboard=keyboards.subscription(),
+        )
+
+    async def send_invite_friend(self, user: asyncpg.Record) -> None:
+        bot_username = await self.tg.username()
+        link = self.bot_deep_link(bot_username, f"ref_{user['id']}")
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "🎁 Пригласите друга",
+                    "",
+                    "Если друг перейдет по вашей ссылке, зарегистрируется и посмотрит хотя бы один кружок, вам станет доступен 1 рандомный контакт из последних 10 кружков.",
+                    "",
+                    link,
+                ]
+            ),
+            inline_keyboard=keyboards.subscription(),
+        )
+
+    async def complete_referral(self, user: asyncpg.Record) -> None:
+        referrer = await self.repo.complete_referral_if_needed(user["id"])
+        if not referrer:
+            return
+        await self.tg.send_message(
+            referrer["chat_id"],
+            "Вам доступен один рандомный контакт.",
+            inline_keyboard=[[{"text": "🎲 Открыть", "callback_data": "open_random_contact"}]],
+        )
+
+    async def open_random_contact(self, user: asyncpg.Record) -> None:
+        fresh = await self.repo.get_user(user["id"])
+        if not fresh or fresh["referral_contact_credits"] <= 0:
+            await self.tg.send_message(user["chat_id"], "Пока нет доступных бонусных контактов.", inline_keyboard=keyboards.subscription())
+            return
+        candidate = await self.repo.random_contact_candidate(user["id"])
+        if not candidate:
+            await self.tg.send_message(user["chat_id"], "Сейчас нет контактов для открытия. Попробуйте позже.", inline_keyboard=keyboards.main_menu())
+            return
+        if not await self.repo.consume_referral_credit(user["id"], candidate["owner_id"]):
+            await self.tg.send_message(user["chat_id"], "Пока нет доступных бонусных контактов.", inline_keyboard=keyboards.subscription())
+            return
+        if WHEEL_VIDEO_PATH.is_file():
+            await self.tg.send_video_file(user["chat_id"], WHEEL_VIDEO_PATH)
+        else:
+            await self.tg.send_message(user["chat_id"], "🎲 Крутим колесо фортуны...")
+        await asyncio.sleep(1)
+        await self.send_media(user["chat_id"], candidate["file_id"], candidate["media_type"])
+        name = display_name(candidate)
+        await self.tg.send_message(
+            user["chat_id"],
+            "Вы открыли контакт " + name,
+            inline_keyboard=keyboards.random_contact(name, self.write_url(candidate)),
+        )
+
+    async def send_payment_stub(self, user: asyncpg.Record, plan: str) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            f"Оплата тарифа {plan} пока подключается. Нажимая оплату, пользователь соглашается с офертой.",
+            inline_keyboard=[[{"text": "📄 Оферта", "callback_data": "offer"}], [{"text": "☰ Главное меню", "callback_data": "main_menu"}]],
+        )
+
+    async def send_offer(self, user: asyncpg.Record) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "📄 Оферта",
+                    "",
+                    "Сервис предоставляет доступ к дополнительным функциям бота знакомств: открытие контактов, возможность написать первым и расширенный просмотр кружков.",
+                    "",
+                    "Оплата выбранного тарифа означает согласие с условиями оказания цифровой услуги. Услуга считается оказанной с момента предоставления доступа к Premium-функциям или бонусному контакту.",
+                    "",
+                    "Пользователь самостоятельно отвечает за содержание анкеты, кружков и переписки. Запрещены спам, мошенничество, оскорбления, незаконный контент и публикация чужих данных.",
+                    "",
+                    "Администрация может ограничить доступ при нарушении правил. Возвраты и спорные ситуации рассматриваются в ручном режиме через поддержку.",
+                ]
+            ),
             inline_keyboard=keyboards.subscription(),
         )
 
@@ -377,6 +506,7 @@ class DatingService:
             inline_keyboard=[
                 [{"text": "📊 Статистика", "callback_data": "admin:stats"}],
                 [{"text": "👥 Пользователи", "callback_data": "admin:users"}],
+                [{"text": "🧹 Очистить базу", "callback_data": "admin:reset_store_prompt"}],
                 [{"text": "☰ Меню", "callback_data": "main_menu"}],
             ],
         )
@@ -391,6 +521,8 @@ class DatingService:
             lines = ["👥 Последние пользователи:"]
             lines.extend([f"#{u['id']} tg={u['telegram_id']} {display_name(u)} status={u['status']}" for u in users])
             await self.tg.send_message(user["chat_id"], "\n".join(lines))
+        elif parts[1] == "reset_store_prompt":
+            await self.tg.send_message(user["chat_id"], "Для полной очистки базы отправьте текстом:\n/admin_reset_store confirm")
 
     async def send_stats(self, user: asyncpg.Record) -> None:
         stats = await self.repo.stats()

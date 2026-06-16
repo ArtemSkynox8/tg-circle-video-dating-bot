@@ -24,6 +24,13 @@ def matches_page(page: int, total: int, page_size: int = 10) -> list[list[dict]]
     return rows
 
 
+def circles_finished() -> list[list[dict]]:
+    return [
+        [button("🔁 Посмотреть заново", "reset_browse")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
 def gender() -> list[list[dict]]:
     return [[button("Мужской", "gender:male"), button("Женский", "gender:female")]]
 
@@ -88,4 +95,19 @@ def match_actions(matched_user_id: int, can_get_contact: bool, url: str | None) 
 
 
 def subscription() -> list[list[dict]]:
-    return [[button("💎 Оплатить Premium", "premium_pay_stub")], [button("☰ Главное меню", "main_menu")]]
+    return [
+        [button("🎁 Пригласить друга", "invite_friend")],
+        [button("🎲 Открыть рандомный контакт", "open_random_contact")],
+        [button("🔥 49 ₽ / 3 дня", "premium_3_days")],
+        [button("💎 199 ₽ / неделя", "premium_week")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
+def random_contact(name: str, url: str | None) -> list[list[dict]]:
+    rows: list[list[dict]] = []
+    if url:
+        rows.append([button("💬 Написать " + name, url=url)])
+    rows.append([button("▶️ Продолжить просмотр", "browse")])
+    rows.append([button("☰ Главное меню", "main_menu")])
+    return rows
