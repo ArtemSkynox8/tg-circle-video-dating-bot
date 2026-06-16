@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from app.telegram import button
 
 
@@ -99,6 +101,14 @@ def subscription() -> list[list[dict]]:
         [button("🎲 Открыть рандомный контакт", "open_random_contact")],
         [button("🔥 49 ₽ / 3 дня", "premium_3_days")],
         [button("💎 199 ₽ / неделя", "premium_week")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
+def invite_friend(link: str, text: str) -> list[list[dict]]:
+    share_url = "https://t.me/share/url?url=" + quote(link, safe="") + "&text=" + quote(text, safe="")
+    return [
+        [button("🎁 Поделиться", url=share_url)],
         [button("☰ Главное меню", "main_menu")],
     ]
 

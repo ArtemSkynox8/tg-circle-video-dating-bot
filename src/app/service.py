@@ -23,6 +23,7 @@ STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 WHEEL_VIDEO_PATH = Path(__file__).resolve().parents[1] / "assets" / "fortune-wheel" / "wheel.mp4"
+INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
 NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
@@ -427,11 +428,9 @@ class DatingService:
                     "🎁 Пригласите друга",
                     "",
                     "Если друг перейдет по вашей ссылке, зарегистрируется и посмотрит хотя бы один кружок, вам станет доступен 1 рандомный контакт из последних 10 кружков.",
-                    "",
-                    link,
                 ]
             ),
-            inline_keyboard=keyboards.subscription(),
+            inline_keyboard=keyboards.invite_friend(link, INVITE_SHARE_TEXT),
         )
 
     async def complete_referral(self, user: asyncpg.Record) -> None:
