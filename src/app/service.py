@@ -19,6 +19,7 @@ STATE_AWAITING_VIDEO = "awaiting_video"
 STATE_AWAITING_REWRITE_VIDEO = "awaiting_rewrite_video"
 STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
+MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
 NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
@@ -442,7 +443,7 @@ class DatingService:
     @staticmethod
     def write_url(user: asyncpg.Record) -> str:
         if user["username"]:
-            return f"https://t.me/{quote(user['username'], safe='')}"
+            return f"tg://resolve?domain={quote(user['username'], safe='')}&text={quote(MATCH_MESSAGE_TEXT, safe='')}"
         return f"tg://user?id={user['telegram_id']}"
 
     def is_admin(self, user: asyncpg.Record) -> bool:
