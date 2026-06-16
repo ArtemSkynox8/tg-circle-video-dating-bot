@@ -381,22 +381,16 @@ class DatingService:
         await self.tg.send_message(user["chat_id"], "Жалоба отправлена. Спасибо.", inline_keyboard=keyboards.main_menu())
 
     async def send_subscription(self, user: asyncpg.Record) -> None:
-        if user["is_premium"]:
-            await self.tg.send_message(
-                user["chat_id"],
-                "💎 Подписка активна.\n\nPremium дает доступ к контактам пользователей и возможность писать первым.",
-                inline_keyboard=keyboards.subscription(),
-            )
-            return
         bot_username = await self.tg.username()
         offer_url = self.bot_deep_link(bot_username, "offer")
+        status_text = "Подписка подключена" if user["is_premium"] else "Подписка не подключена"
         await self.tg.send_message(
             user["chat_id"],
             "\n".join(
                 [
-                    "💎 Подписка Premium",
+                    "<b>💎 Подписка Premium</b>",
                     "",
-                    "Что входит:",
+                    "<b>Что входит:</b>",
                     "• доступ к контактам пользователей;",
                     "• возможность писать первым без взаимного лайка;",
                     "• неограниченный просмотр кружков.",
@@ -408,9 +402,8 @@ class DatingService:
                     "",
                     f'Переходя к оплате, вы соглашаетесь с <a href="{offer_url}">офертой</a>.',
                     "",
-                    "Подписка с автосписанием:",
-                    "",
-                    "Оплата пока подключается.",
+                    "<b>Статус:</b>",
+                    status_text,
                 ]
             ),
             inline_keyboard=keyboards.subscription(),
