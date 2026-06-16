@@ -53,6 +53,15 @@ Healthcheck:
 GET /healthz
 ```
 
+## Timeweb deploy
+
+Use `/src` as project directory. Build and run commands are executed from that directory:
+
+```bash
+pip install --upgrade -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
 Если `PUBLIC_BASE_URL` начинается с `https://`, бот при старте сам вызывает `setWebhook` и `setMyCommands`.
 
 ## PostgreSQL schema
