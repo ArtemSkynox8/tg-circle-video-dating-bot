@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -22,7 +21,6 @@ STATE_AWAITING_REWRITE_VIDEO = "awaiting_rewrite_video"
 STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
-WHEEL_VIDEO_PATH = Path(__file__).resolve().parents[1] / "assets" / "fortune-wheel" / "wheel.mp4"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
@@ -337,6 +335,8 @@ class DatingService:
             if referrer_id:
                 await self.repo.set_referrer(user["id"], referrer_id)
             await self.start(user)
+        elif payload == "offer":
+            await self.send_offer(user)
         else:
             await self.start(user)
 
@@ -455,10 +455,7 @@ class DatingService:
         if not await self.repo.consume_referral_credit(user["id"], candidate["owner_id"]):
             await self.send_invite_friend(user)
             return
-        if WHEEL_VIDEO_PATH.is_file():
-            await self.tg.send_video_file(user["chat_id"], WHEEL_VIDEO_PATH)
-        else:
-            await self.tg.send_message(user["chat_id"], "🎲 Крутим колесо фортуны...")
+        await self.tg.send_dice(user["chat_id"], "🎲")
         await asyncio.sleep(1)
         await self.send_media(user["chat_id"], candidate["file_id"], candidate["media_type"])
         name = display_name(candidate)

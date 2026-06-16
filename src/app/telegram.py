@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -25,16 +24,6 @@ class TelegramClient:
         if not data.get("ok"):
             raise RuntimeError(f"Telegram {method} failed: {data}")
         return data
-
-    async def call_multipart(self, method: str, data: dict[str, Any], files: dict[str, Any]) -> dict[str, Any]:
-        if not self.token:
-            return {"ok": False, "description": "TELEGRAM_BOT_TOKEN is empty"}
-        response = await self.client.post(f"{self.base_url}/{method}", data=data, files=files)
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise RuntimeError(f"Telegram {method} failed: {payload}")
-        return payload
 
     async def set_webhook(self, url: str, secret_token: str) -> None:
         await self.call(
@@ -133,23 +122,9 @@ class TelegramClient:
         data = await self.call("sendVideo", payload)
         return data.get("result", {}).get("message_id")
 
-    async def send_video_file(
-        self,
-        chat_id: int,
-        path: Path,
-        *,
-        caption: str | None = None,
-    ) -> int | None:
-        with path.open("rb") as video:
-            data = {"chat_id": str(chat_id)}
-            if caption:
-                data["caption"] = caption
-            payload = await self.call_multipart(
-                "sendVideo",
-                data,
-                {"video": (path.name, video, "video/mp4")},
-            )
-        return payload.get("result", {}).get("message_id")
+    async def send_dice(self, chat_id: int, emoji: str = "🎲") -> int | None:
+        data = await self.call("sendDice", {"chat_id": chat_id, "emoji": emoji})
+        return data.get("result", {}).get("message_id")
 
     async def send_contact(self, chat_id: int, phone_number: str, first_name: str) -> None:
         await self.call(
