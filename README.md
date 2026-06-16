@@ -29,7 +29,12 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=...
 WEBHOOK_SECRET=...
 PUBLIC_BASE_URL=https://your-domain.example
-DATABASE_URL=postgresql://gen_user:password@host:5432/default_db?sslmode=verify-full
+DATABASE_HOST=host
+DATABASE_PORT=5432
+DATABASE_NAME=default_db
+DATABASE_USER=gen_user
+DATABASE_PASSWORD=password
+DATABASE_SSLMODE=verify-full
 DATABASE_SCHEMA=tg_circle_video_dating_bot
 PGSSLROOTCERT=/app/.cloud-certs/root.crt
 ADMIN_TELEGRAM_IDS=123456789
