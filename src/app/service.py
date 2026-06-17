@@ -101,10 +101,16 @@ class DatingService:
             await self.prompt_video(user, rewrite=True)
         elif text == "/tester_reset_me":
             await self.reset_me(user)
-        elif text == "/admin" and self.is_admin(user):
-            await self.send_admin(user)
-        elif text == "/botstats" and self.is_admin(user):
-            await self.send_stats(user)
+        elif text == "/admin":
+            if self.is_admin(user):
+                await self.send_admin(user)
+            else:
+                await self.send_admin_denied(user)
+        elif text == "/botstats":
+            if self.is_admin(user):
+                await self.send_stats(user)
+            else:
+                await self.send_admin_denied(user)
         elif text.startswith("/addtag "):
             await self.add_tag(user, text.removeprefix("/addtag ").strip())
         elif text == "/myid":
@@ -112,8 +118,11 @@ class DatingService:
         elif text == "/admin_reset_store confirm" and self.is_admin(user):
             await self.repo.reset_all()
             await self.tg.send_message(user["chat_id"], "База очищена.")
-        elif text.startswith("/user ") and self.is_admin(user):
-            await self.send_user_card(user, text.removeprefix("/user ").strip())
+        elif text.startswith("/user "):
+            if self.is_admin(user):
+                await self.send_user_card(user, text.removeprefix("/user ").strip())
+            else:
+                await self.send_admin_denied(user)
         elif contact := message.get("contact"):
             await self.save_contact(user, contact)
         elif video_note := message.get("video_note"):
@@ -659,6 +668,19 @@ class DatingService:
                 [{"text": "🧹 Очистить базу", "callback_data": "admin:reset_store_prompt"}],
                 [{"text": "☰ Меню", "callback_data": "main_menu"}],
             ],
+        )
+
+    async def send_admin_denied(self, user: asyncpg.Record) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "Нет доступа к админке.",
+                    f"Ваш Telegram ID: {user['telegram_id']}",
+                    f"Chat ID: {user['chat_id']}",
+                    "Админы в коде: 190796855",
+                ]
+            ),
         )
 
     async def handle_admin(self, user: asyncpg.Record, parts: list[str]) -> None:

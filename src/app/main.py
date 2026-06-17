@@ -36,6 +36,7 @@ async def lifespan(_: FastAPI):
         state.settings.admin_telegram_ids,
         state.settings.premium_price,
     )
+    logger.info("admin telegram ids loaded: %s", sorted(state.settings.admin_telegram_ids))
 
     if state.settings.telegram_bot_token and state.settings.public_base_url.startswith("https://"):
         webhook_url = f"{state.settings.public_base_url}/webhook/telegram"
