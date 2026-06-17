@@ -160,7 +160,7 @@ class Repository:
                 """
                 UPDATE users
                 SET is_premium = TRUE,
-                    premium_expires_at = greatest(coalesce(premium_expires_at, now()), now()) + ($2::text || ' days')::interval,
+                    premium_expires_at = greatest(coalesce(premium_expires_at, now()), now()) + make_interval(days => $2::int),
                     updated_at = now()
                 WHERE id = $1
                 RETURNING *

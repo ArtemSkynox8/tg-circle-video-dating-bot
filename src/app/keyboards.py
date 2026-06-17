@@ -46,7 +46,7 @@ def browse(video_id: int, owner_id: int, can_write: bool) -> list[list[dict]]:
     if can_write:
         rows.append([button("💬 Написать", f"like:{video_id}:{owner_id}")])
     else:
-        rows.append([button("💬 Написать", "premium")])
+        rows.append([button("💬 Написать", f"premium_for:{video_id}:{owner_id}")])
     rows.append([button("🚨 Пожаловаться", f"report:{video_id}:{owner_id}"), button("☰ Меню", "main_menu")])
     return rows
 
@@ -101,6 +101,21 @@ def subscription() -> list[list[dict]]:
         [button("🎲 Открыть рандомный контакт", "open_random_contact")],
         [button("🔥 1 ⭐ / 3 дня", "premium_3_days")],
         [button("💎 199 ⭐ / неделя", "premium_week")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
+def subscription_for(video_id: int, owner_id: int) -> list[list[dict]]:
+    return [
+        [button("🔥 1 ⭐ / 3 дня", f"premium_3_days:{video_id}:{owner_id}")],
+        [button("💎 199 ⭐ / неделя", f"premium_week:{video_id}:{owner_id}")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
+def active_subscription() -> list[list[dict]]:
+    return [
+        [button("▶️ Продолжить просмотр", "browse")],
         [button("☰ Главное меню", "main_menu")],
     ]
 

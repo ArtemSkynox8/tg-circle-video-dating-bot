@@ -189,10 +189,18 @@ class DatingService:
                 await self.tg.send_message(chat_id, "Главное меню:", inline_keyboard=keyboards.main_menu())
             case "premium" | "subscription" | "premium_pay_stub":
                 await self.send_subscription(user)
+            case "premium_for" if len(parts) == 3:
+                await self.send_subscription(user, int(parts[1]), int(parts[2]))
             case "premium_3_days":
-                await self.send_stars_invoice(user, PREMIUM_PLANS["3_days"])
+                if len(parts) == 3:
+                    await self.send_stars_invoice(user, PREMIUM_PLANS["3_days"], int(parts[1]), int(parts[2]))
+                else:
+                    await self.send_stars_invoice(user, PREMIUM_PLANS["3_days"])
             case "premium_week":
-                await self.send_stars_invoice(user, PREMIUM_PLANS["week"])
+                if len(parts) == 3:
+                    await self.send_stars_invoice(user, PREMIUM_PLANS["week"], int(parts[1]), int(parts[2]))
+                else:
+                    await self.send_stars_invoice(user, PREMIUM_PLANS["week"])
             case "invite_friend":
                 await self.send_invite_friend(user)
             case "open_random_contact":
@@ -301,7 +309,10 @@ class DatingService:
         )
 
     async def handle_browse_action(self, user: asyncpg.Record, video_id: int, owner_id: int, action: str, message: dict[str, Any]) -> None:
-        if action in {"like", "like_only"}:
+        fresh = await self.repo.get_user(user["id"]) or user
+        if action == "like" and self.premium_active(fresh):
+            await self.open_contact_as_match(fresh, owner_id, video_id)
+        elif action in {"like", "like_only"}:
             await self.repo.record_action(user["id"], owner_id, video_id, action)
             await self.react_to_browse_message(user["chat_id"], message)
             await asyncio.sleep(1)
@@ -316,6 +327,27 @@ class DatingService:
         message_id = int(message.get("message_id") or 0)
         if message_id:
             await self.tg.set_message_reaction(chat_id, message_id, "❤")
+
+    async def open_contact_as_match(self, user: asyncpg.Record, owner_id: int, video_id: int) -> None:
+        other = await self.repo.get_user(owner_id)
+        if not other:
+            return
+        await self.repo.record_action(user["id"], owner_id, video_id, "like")
+        await self.repo.record_action(owner_id, user["id"], video_id, "like")
+        await self.send_opened_contact(user, other)
+
+    async def send_opened_contact(self, user: asyncpg.Record, other: asyncpg.Record) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            f"Контакт открыт: {display_name(other)}. Он добавлен во взаимные лайки.",
+            inline_keyboard=keyboards.match_actions(other["id"], True, self.write_url(other) if other["username"] else None),
+        )
+        if other["contact_phone"]:
+            await self.tg.send_contact(user["chat_id"], other["contact_phone"], display_name(other))
+        elif other["username"]:
+            await self.tg.send_message(user["chat_id"], f"Telegram: https://t.me/{other['username']}")
+        else:
+            await self.tg.send_message(user["chat_id"], "Пользователь пока не поделился контактом.")
 
     async def announce_match(self, user: asyncpg.Record, owner_id: int) -> None:
         other = await self.repo.get_user(owner_id)
@@ -409,12 +441,16 @@ class DatingService:
         await self.repo.report(user["id"], owner_id, video_id, reason)
         await self.tg.send_message(user["chat_id"], "Жалоба отправлена. Спасибо.", inline_keyboard=keyboards.main_menu())
 
-    async def send_subscription(self, user: asyncpg.Record) -> None:
+    async def send_subscription(self, user: asyncpg.Record, video_id: int | None = None, owner_id: int | None = None) -> None:
+        fresh = await self.repo.get_user(user["id"]) or user
+        if self.premium_active(fresh):
+            await self.send_active_subscription(fresh)
+            return
         bot_username = await self.tg.username()
         offer_url = self.bot_deep_link(bot_username, "offer")
-        status_text = self.premium_status_text(user)
+        status_text = self.premium_status_text(fresh)
         await self.tg.send_message(
-            user["chat_id"],
+            fresh["chat_id"],
             "\n".join(
                 [
                     "<b>💎 Подписка Premium</b>",
@@ -435,7 +471,27 @@ class DatingService:
                     status_text,
                 ]
             ),
-            inline_keyboard=keyboards.subscription(),
+            inline_keyboard=keyboards.subscription_for(video_id, owner_id) if video_id and owner_id else keyboards.subscription(),
+            parse_mode="HTML",
+        )
+
+    async def send_active_subscription(self, user: asyncpg.Record) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "<b>💎 Подписка Premium активна</b>",
+                    "",
+                    "<b>Что открыто:</b>",
+                    "• доступ к контактам пользователей;",
+                    "• возможность писать первым без взаимного лайка;",
+                    "• неограниченный просмотр кружков.",
+                    "",
+                    "<b>Статус:</b>",
+                    self.premium_status_text(user),
+                ]
+            ),
+            inline_keyboard=keyboards.active_subscription(),
             parse_mode="HTML",
         )
 
@@ -486,12 +542,12 @@ class DatingService:
             inline_keyboard=keyboards.random_contact(name, self.write_url(candidate)),
         )
 
-    async def send_stars_invoice(self, user: asyncpg.Record, plan: PremiumPlan) -> None:
+    async def send_stars_invoice(self, user: asyncpg.Record, plan: PremiumPlan, video_id: int | None = None, owner_id: int | None = None) -> None:
         await self.tg.send_invoice(
             user["chat_id"],
             plan.title,
             f"Доступ к Premium-функциям на {plan.days} дн.",
-            f"premium:{plan.code}:{user['id']}",
+            self.payment_payload(plan, user["id"], video_id, owner_id),
             plan.stars,
         )
 
@@ -510,19 +566,36 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "Платеж получен, но тариф не распознан. Напишите в поддержку.")
             return
         updated = await self.repo.grant_premium_days(user["id"], plan.days)
-        await self.tg.send_message(
-            user["chat_id"],
-            f"Premium подключен на {plan.days} дн. Спасибо за оплату ⭐",
-            inline_keyboard=keyboards.main_menu(),
-        )
-        if updated and updated["premium_expires_at"]:
-            await self.tg.send_message(user["chat_id"], "Доступ открыт до " + format_datetime(updated["premium_expires_at"]))
+        if updated:
+            user = updated
+        target = self.target_from_payload(payload)
+        if target:
+            video_id, owner_id = target
+            await self.open_contact_as_match(user, owner_id, video_id)
+        await self.send_active_subscription(user)
 
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
-        if len(parts) != 3 or parts[0] != "premium":
+        if len(parts) < 3 or parts[0] != "premium":
             return None
         return PREMIUM_PLANS.get(parts[1])
+
+    @staticmethod
+    def payment_payload(plan: PremiumPlan, user_id: int, video_id: int | None = None, owner_id: int | None = None) -> str:
+        parts = ["premium", plan.code, str(user_id)]
+        if video_id and owner_id:
+            parts.extend([str(video_id), str(owner_id)])
+        return ":".join(parts)
+
+    @staticmethod
+    def target_from_payload(payload: str) -> tuple[int, int] | None:
+        parts = payload.split(":")
+        if len(parts) != 5:
+            return None
+        try:
+            return int(parts[3]), int(parts[4])
+        except ValueError:
+            return None
 
     async def send_offer(self, user: asyncpg.Record) -> None:
         await self.tg.send_message(
