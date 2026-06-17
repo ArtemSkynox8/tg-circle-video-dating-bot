@@ -75,52 +75,53 @@ class DatingService:
             return
 
         text = (message.get("text") or "").strip()
-        if text.startswith("/start"):
-            payload = text.removeprefix("/start").strip()
+        command, command_arg = parse_bot_command(text)
+        if command == "/start":
+            payload = command_arg
             user = await self.apply_start_tag(user, payload)
         if not existing_user:
             await self.notify_admins("👤 Новый пользователь\n" + self.user_log_line(user))
 
-        if text.startswith("/start"):
-            payload = text.removeprefix("/start").strip()
+        if command == "/start":
+            payload = command_arg
             if payload:
                 await self.handle_start_payload(user, payload)
             else:
                 await self.start(user)
-        elif text in {"/commands", "/help"}:
+        elif command in {"/commands", "/help"}:
             await self.send_commands(user)
-        elif text == "/browse":
+        elif command == "/browse":
             await self.send_next_candidate(user)
-        elif text == "/matches":
+        elif command == "/matches":
             await self.send_matches(user)
-        elif text == "/profile":
+        elif command == "/profile":
             await self.tg.send_message(user["chat_id"], "Что хотите изменить?", inline_keyboard=keyboards.edit_profile())
-        elif text in {"/subscription", "/premium"}:
+        elif command in {"/subscription", "/premium"}:
             await self.send_subscription(user)
-        elif text == "/record":
+        elif command == "/record":
             await self.prompt_video(user, rewrite=True)
-        elif text == "/tester_reset_me":
+        elif command == "/tester_reset_me":
             await self.reset_me(user)
-        elif text == "/admin":
+        elif command == "/admin":
             if self.is_admin(user):
                 await self.send_admin(user)
             else:
                 await self.send_admin_denied(user)
-        elif text == "/botstats":
+        elif command == "/botstats":
             if self.is_admin(user):
                 await self.send_stats(user)
             else:
                 await self.send_admin_denied(user)
-        elif text.startswith("/addtag "):
-            await self.add_tag(user, text.removeprefix("/addtag ").strip())
-        elif text == "/myid":
+        elif command == "/addtag":
+            await self.add_tag(user, command_arg)
+        elif command == "/myid":
             await self.tg.send_message(user["chat_id"], f"Ваш Telegram ID: {user['telegram_id']}\nChat ID: {user['chat_id']}")
-        elif text == "/admin_reset_store confirm" and self.is_admin(user):
+        elif command == "/admin_reset_store" and command_arg == "confirm" and self.is_admin(user):
             await self.repo.reset_all()
             await self.tg.send_message(user["chat_id"], "База очищена.")
-        elif text.startswith("/user "):
+        elif command == "/user":
             if self.is_admin(user):
-                await self.send_user_card(user, text.removeprefix("/user ").strip())
+                await self.send_user_card(user, command_arg)
             else:
                 await self.send_admin_denied(user)
         elif contact := message.get("contact"):
@@ -831,6 +832,14 @@ def parse_payload_id(payload: str, prefix: str) -> int:
         return int(payload.removeprefix(prefix))
     except ValueError:
         return 0
+
+
+def parse_bot_command(text: str) -> tuple[str, str]:
+    if not text.startswith("/"):
+        return "", ""
+    raw_command, _, arg = text.partition(" ")
+    command = raw_command.split("@", 1)[0].lower()
+    return command, arg.strip()
 
 
 def format_datetime(value: datetime) -> str:
