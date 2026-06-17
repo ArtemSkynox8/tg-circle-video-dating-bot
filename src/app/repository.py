@@ -50,6 +50,21 @@ CREATE TABLE IF NOT EXISTS actions (
     UNIQUE (from_user_id, to_user_id)
 );
 
+CREATE TABLE IF NOT EXISTS viewed_videos (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    owner_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, video_id)
+);
+
+INSERT INTO viewed_videos (user_id, video_id, owner_id, action, created_at)
+SELECT from_user_id, video_id, to_user_id, action, created_at
+FROM actions
+WHERE video_id IS NOT NULL
+ON CONFLICT (user_id, video_id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS hidden_matches (
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     matched_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -227,40 +242,59 @@ class Repository:
                   AND u.status = 'active'
                   AND ($2 = 'any' OR u.gender = $2)
                   AND NOT EXISTS (
-                    SELECT 1 FROM actions a
-                    WHERE a.from_user_id = $1 AND a.to_user_id = u.id
+                    SELECT 1 FROM viewed_videos vv
+                    WHERE vv.user_id = $1 AND vv.video_id = v.id
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM reports r
                     WHERE r.reporter_id = $1 AND r.target_user_id = u.id
                   )
-                ORDER BY random()
+                ORDER BY v.created_at DESC, random()
                 LIMIT 1
                 """,
                 user["id"],
                 preferred or "any",
             )
 
-    async def record_action(self, from_user_id: int, to_user_id: int, video_id: int, action: str) -> None:
+    async def record_action(self, from_user_id: int, to_user_id: int, video_id: int, action: str, mark_viewed: bool = True) -> None:
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO actions (from_user_id, to_user_id, video_id, action)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (from_user_id, to_user_id) DO UPDATE SET
-                    video_id = EXCLUDED.video_id,
-                    action = EXCLUDED.action,
-                    created_at = now()
-                """,
-                from_user_id,
-                to_user_id,
-                video_id,
-                action,
-            )
+            async with conn.transaction():
+                if mark_viewed:
+                    await conn.execute(
+                        """
+                        INSERT INTO viewed_videos (user_id, video_id, owner_id, action)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (user_id, video_id) DO UPDATE SET
+                            action = EXCLUDED.action,
+                            created_at = now()
+                        """,
+                        from_user_id,
+                        video_id,
+                        to_user_id,
+                        action,
+                    )
+                if action == "next":
+                    return
+                await conn.execute(
+                    """
+                    INSERT INTO actions (from_user_id, to_user_id, video_id, action)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (from_user_id, to_user_id) DO UPDATE SET
+                        video_id = EXCLUDED.video_id,
+                        action = EXCLUDED.action,
+                        created_at = now()
+                    """,
+                    from_user_id,
+                    to_user_id,
+                    video_id,
+                    action,
+                )
 
     async def reset_browse(self, user_id: int) -> None:
         async with self.pool.acquire() as conn:
-            await conn.execute("DELETE FROM actions WHERE from_user_id = $1 AND action = 'next'", user_id)
+            async with conn.transaction():
+                await conn.execute("DELETE FROM viewed_videos WHERE user_id = $1", user_id)
+                await conn.execute("DELETE FROM actions WHERE from_user_id = $1 AND action = 'next'", user_id)
 
     async def complete_referral_if_needed(self, user_id: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
@@ -436,7 +470,7 @@ class Repository:
     async def reset_all(self) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("TRUNCATE referral_contact_opens, reports, hidden_matches, actions, videos, users RESTART IDENTITY CASCADE")
+                await conn.execute("TRUNCATE referral_contact_opens, reports, hidden_matches, viewed_videos, actions, videos, users RESTART IDENTITY CASCADE")
 
     async def stats(self) -> dict[str, int]:
         async with self.pool.acquire() as conn:

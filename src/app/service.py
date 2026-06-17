@@ -333,7 +333,7 @@ class DatingService:
         if not other:
             return
         await self.repo.record_action(user["id"], owner_id, video_id, "like")
-        await self.repo.record_action(owner_id, user["id"], video_id, "like")
+        await self.repo.record_action(owner_id, user["id"], video_id, "like", mark_viewed=False)
         await self.send_opened_contact(user, other)
 
     async def send_opened_contact(self, user: asyncpg.Record, other: asyncpg.Record) -> None:
