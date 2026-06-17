@@ -36,38 +36,51 @@ class TelegramClient:
             },
         )
 
-    async def set_commands(self) -> None:
+    async def set_commands(self, admin_ids: set[int] | None = None) -> None:
+        public_commands = [
+            {"command": "start", "description": "Открыть главное меню"},
+            {"command": "browse", "description": "Смотреть кружки"},
+            {"command": "matches", "description": "Взаимные лайки"},
+            {"command": "profile", "description": "Изменить анкету"},
+            {"command": "subscription", "description": "Подписка"},
+            {"command": "help", "description": "Команды бота"},
+        ]
+        admin_commands = [
+            *public_commands,
+            {"command": "admin", "description": "Админ-меню"},
+            {"command": "admin_claim", "description": "Добавить себя первым админом"},
+            {"command": "adstats", "description": "Статистика по метке"},
+            {"command": "adstats_all", "description": "Статистика по всем меткам"},
+            {"command": "botstats", "description": "Общая статистика"},
+            {"command": "substats", "description": "Статистика подписок"},
+            {"command": "choicestats", "description": "Статистика выбора"},
+            {"command": "adtag", "description": "Создать ссылку с меткой"},
+            {"command": "push_leads", "description": "Пуш пользователям без подписки"},
+            {"command": "push_active", "description": "Пуш активным пользователям"},
+            {"command": "push_stats", "description": "Диагностика пушей"},
+            {"command": "payments", "description": "Последние оплаты"},
+            {"command": "errors", "description": "Последние ошибки"},
+            {"command": "user", "description": "Карточка пользователя"},
+            {"command": "admin_add", "description": "Добавить админа"},
+            {"command": "admin_del", "description": "Удалить админа"},
+            {"command": "admin_list", "description": "Список админов"},
+            {"command": "admin_reset_payments", "description": "Сброс тестовых оплат"},
+        ]
         await self.call(
             "setMyCommands",
             {
-                "commands": [
-                    {"command": "start", "description": "Открыть главное меню"},
-                    {"command": "browse", "description": "Смотреть кружки"},
-                    {"command": "matches", "description": "Взаимные лайки"},
-                    {"command": "profile", "description": "Изменить анкету"},
-                    {"command": "subscription", "description": "Подписка"},
-                    {"command": "help", "description": "Команды бота"},
-                    {"command": "admin", "description": "Админ-меню"},
-                    {"command": "admin_claim", "description": "Добавить себя первым админом"},
-                    {"command": "adstats", "description": "Статистика по метке"},
-                    {"command": "adstats_all", "description": "Статистика по всем меткам"},
-                    {"command": "botstats", "description": "Общая статистика"},
-                    {"command": "substats", "description": "Статистика подписок"},
-                    {"command": "choicestats", "description": "Статистика выбора"},
-                    {"command": "adtag", "description": "Создать ссылку с меткой"},
-                    {"command": "push_leads", "description": "Пуш пользователям без подписки"},
-                    {"command": "push_active", "description": "Пуш активным пользователям"},
-                    {"command": "push_stats", "description": "Диагностика пушей"},
-                    {"command": "payments", "description": "Последние оплаты"},
-                    {"command": "errors", "description": "Последние ошибки"},
-                    {"command": "user", "description": "Карточка пользователя"},
-                    {"command": "admin_add", "description": "Добавить админа"},
-                    {"command": "admin_del", "description": "Удалить админа"},
-                    {"command": "admin_list", "description": "Список админов"},
-                    {"command": "admin_reset_payments", "description": "Сброс тестовых оплат"},
-                ]
+                "commands": public_commands,
+                "scope": {"type": "all_private_chats"},
             },
         )
+        for admin_id in admin_ids or set():
+            await self.call(
+                "setMyCommands",
+                {
+                    "commands": admin_commands,
+                    "scope": {"type": "chat", "chat_id": admin_id},
+                },
+            )
 
     async def username(self) -> str:
         if self._username:

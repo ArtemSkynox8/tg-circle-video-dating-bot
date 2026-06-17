@@ -46,7 +46,7 @@ async def lifespan(_: FastAPI):
         webhook_url = f"{state.settings.public_base_url}/webhook/telegram"
         try:
             await state.tg.set_webhook(webhook_url, state.settings.webhook_secret)
-            await state.tg.set_commands()
+            await state.tg.set_commands(admin_ids)
             logger.info("telegram webhook configured: %s", webhook_url)
         except Exception:
             logger.exception("failed to configure telegram webhook")
