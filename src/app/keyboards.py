@@ -109,6 +109,7 @@ def subscription_for(video_id: int, owner_id: int) -> list[list[dict]]:
     return [
         [button("🔥 1 ⭐ / 3 дня", f"premium_3_days:{video_id}:{owner_id}")],
         [button("💎 199 ⭐ / неделя", f"premium_week:{video_id}:{owner_id}")],
+        [button("▶️ Продолжить просмотр", f"continue_after_offer:{video_id}:{owner_id}")],
         [button("☰ Главное меню", "main_menu")],
     ]
 

@@ -52,6 +52,8 @@ class DatingService:
         self.admin_ids = admin_ids
         self.admin_claim_secret = admin_claim_secret
         self.premium_price = premium_price or "199"
+        self.pending_write_deletions: dict[int, asyncio.Task] = {}
+        self.pending_write_messages: dict[int, tuple[int, int]] = {}
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         if pre_checkout_query := update.get("pre_checkout_query"):
@@ -288,7 +290,13 @@ class DatingService:
             case "premium" | "subscription" | "premium_pay_stub":
                 await self.send_subscription(user)
             case "premium_for" if len(parts) == 3:
+                await self.hold_current_circle_for_payment(user, message)
                 await self.send_subscription(user, int(parts[1]), int(parts[2]))
+            case "continue_after_offer" if len(parts) == 3:
+                await self.delete_pending_write_circle(user)
+                await self.delete_callback_message(message)
+                await self.repo.record_action(user["id"], int(parts[2]), int(parts[1]), "next")
+                await self.send_next_candidate(user)
             case "premium_3_days":
                 if len(parts) == 3:
                     await self.send_stars_invoice(user, PREMIUM_PLANS["3_days"], int(parts[1]), int(parts[2]))
@@ -416,10 +424,12 @@ class DatingService:
             await self.notify_like(fresh, owner_id, video_id)
             await self.react_to_browse_message(user["chat_id"], message)
             await asyncio.sleep(1)
+            await self.delete_callback_message(message)
             if await self.repo.mutual_like(user["id"], owner_id):
                 await self.announce_match(user, owner_id)
         elif action == "next":
             await self.repo.record_action(user["id"], owner_id, video_id, "next")
+            await self.delete_callback_message(message)
         await self.complete_referral(user)
         await self.send_next_candidate(user)
 
@@ -427,6 +437,43 @@ class DatingService:
         message_id = int(message.get("message_id") or 0)
         if message_id:
             await self.tg.set_message_reaction(chat_id, message_id, "❤")
+
+    async def delete_callback_message(self, message: dict[str, Any]) -> None:
+        chat_id = int((message.get("chat") or {}).get("id") or 0)
+        message_id = int(message.get("message_id") or 0)
+        if chat_id and message_id:
+            await self.tg.delete_message(chat_id, message_id)
+
+    async def hold_current_circle_for_payment(self, user: asyncpg.Record, message: dict[str, Any]) -> None:
+        await self.cancel_pending_write_deletion(user["id"])
+        chat_id = int((message.get("chat") or {}).get("id") or user["chat_id"])
+        message_id = int(message.get("message_id") or 0)
+        if not message_id:
+            return
+        self.pending_write_messages[user["id"]] = (chat_id, message_id)
+        self.pending_write_deletions[user["id"]] = asyncio.create_task(self.delete_pending_write_after_timeout(user["id"], chat_id, message_id))
+
+    async def cancel_pending_write_deletion(self, user_id: int) -> None:
+        task = self.pending_write_deletions.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def delete_pending_write_circle(self, user: asyncpg.Record) -> None:
+        await self.cancel_pending_write_deletion(user["id"])
+        pending = self.pending_write_messages.pop(user["id"], None)
+        if pending:
+            chat_id, message_id = pending
+            await self.tg.delete_message(chat_id, message_id)
+
+    async def delete_pending_write_after_timeout(self, user_id: int, chat_id: int, message_id: int) -> None:
+        try:
+            await asyncio.sleep(30)
+            if self.pending_write_messages.get(user_id) == (chat_id, message_id):
+                self.pending_write_messages.pop(user_id, None)
+                self.pending_write_deletions.pop(user_id, None)
+                await self.tg.delete_message(chat_id, message_id)
+        except asyncio.CancelledError:
+            return
 
     async def open_contact_as_match(self, user: asyncpg.Record, owner_id: int, video_id: int) -> None:
         other = await self.repo.get_user(owner_id)
@@ -676,6 +723,8 @@ class DatingService:
         if updated:
             user = updated
         await self.repo.record_tag_event(user["id"], "purchase", plan.stars)
+        await self.cancel_pending_write_deletion(user["id"])
+        self.pending_write_messages.pop(user["id"], None)
         await self.notify_admins(
             f"💎 Пользователь подписался\n{self.user_log_line(user)}\nТариф: {plan.title}\nСумма: {plan.stars} ⭐"
         )

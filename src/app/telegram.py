@@ -127,6 +127,12 @@ class TelegramClient:
             },
         )
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        try:
+            await self.call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        except Exception:
+            return
+
     async def send_video_note(
         self,
         chat_id: int,
