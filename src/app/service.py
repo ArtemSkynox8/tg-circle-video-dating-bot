@@ -46,10 +46,11 @@ NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
 
 
 class DatingService:
-    def __init__(self, repo: Repository, tg: TelegramClient, admin_ids: set[int], premium_price: str) -> None:
+    def __init__(self, repo: Repository, tg: TelegramClient, admin_ids: set[int], admin_claim_secret: str, premium_price: str) -> None:
         self.repo = repo
         self.tg = tg
         self.admin_ids = admin_ids
+        self.admin_claim_secret = admin_claim_secret
         self.premium_price = premium_price or "199"
 
     async def handle_update(self, update: dict[str, Any]) -> None:
@@ -107,13 +108,87 @@ class DatingService:
                 await self.send_admin(user)
             else:
                 await self.send_admin_denied(user)
+        elif command == "/admin_claim":
+            await self.admin_claim(user, command_arg)
         elif command == "/botstats":
             if self.is_admin(user):
-                await self.send_stats(user)
+                await self.send_bot_stats(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/adstats":
+            if self.is_admin(user):
+                await self.send_tag_stats(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/adstats_all":
+            if self.is_admin(user):
+                await self.send_tag_stats(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/substats":
+            if self.is_admin(user):
+                await self.send_substats(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/choicestats":
+            if self.is_admin(user):
+                await self.send_choice_stats(user)
             else:
                 await self.send_admin_denied(user)
         elif command == "/addtag":
             await self.add_tag(user, command_arg)
+        elif command == "/adtag":
+            if self.is_admin(user):
+                await self.send_adtag(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/push_leads":
+            if self.is_admin(user):
+                await self.push_leads(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/push_active":
+            if self.is_admin(user):
+                await self.push_active(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/push_stats":
+            if self.is_admin(user):
+                await self.send_push_stats(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/payments":
+            if self.is_admin(user):
+                await self.send_payments(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/errors":
+            if self.is_admin(user):
+                await self.send_errors(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/admin_add":
+            if self.is_admin(user):
+                await self.admin_add(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/admin_del":
+            if self.is_admin(user):
+                await self.admin_del(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/admin_list":
+            if self.is_admin(user):
+                await self.admin_list(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/admin_reset_payments":
+            if self.is_admin(user):
+                await self.admin_reset_payments(user, command_arg)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/tester_spend_free":
+            await self.tg.send_message(user["chat_id"], "В этом Telegram-боте бесплатные клубнички не используются. Команда принята как no-op.")
         elif command == "/myid":
             await self.tg.send_message(user["chat_id"], f"Ваш Telegram ID: {user['telegram_id']}\nChat ID: {user['chat_id']}")
         elif command == "/admin_reset_store" and command_arg == "confirm" and self.is_admin(user):
@@ -662,13 +737,32 @@ class DatingService:
     async def send_admin(self, user: asyncpg.Record) -> None:
         await self.tg.send_message(
             user["chat_id"],
-            "Админ-панель:",
-            inline_keyboard=[
-                [{"text": "📊 Статистика", "callback_data": "admin:stats"}],
-                [{"text": "👥 Пользователи", "callback_data": "admin:users"}],
-                [{"text": "🧹 Очистить базу", "callback_data": "admin:reset_store_prompt"}],
-                [{"text": "☰ Меню", "callback_data": "main_menu"}],
-            ],
+            "\n".join(
+                [
+                    "Админ-меню",
+                    "/admin_claim секрет - добавить себя первым админом",
+                    "/adstats метка - статистика по метке",
+                    "/adstats_all - статистика по всем меткам",
+                    "/botstats - общая статистика",
+                    "/substats - статистика подписок",
+                    "/choicestats - статистика выбора девушек",
+                    "/tester_spend_free - обнулить свои бесплатные клубнички на сегодня",
+                    "/tester_reset_me - очистить свой профиль, сохранив админку",
+                    "/adtag метка - создать ссылку с меткой",
+                    "/push_leads [лимит] - отправить пуш пользователям без активной подписки",
+                    "/push_active текст - отправить пуш активным пользователям и админам",
+                    "/push_stats - диагностика базы и последнего пуша",
+                    "/payments - последние оплаты",
+                    "/errors - последние ошибки",
+                    "/user id - карточка пользователя",
+                    "/admin_add id - добавить админа",
+                    "/admin_del id - удалить админа",
+                    "/admin_list - список админов",
+                    "/admin_reset_payments all - сбросить тестовые оплаты",
+                    "/admin_reset_payments id - сбросить оплаты пользователя",
+                    "/admin_reset_store confirm - полностью очистить базу бота",
+                ]
+            ),
         )
 
     async def send_admin_denied(self, user: asyncpg.Record) -> None:
@@ -688,7 +782,7 @@ class DatingService:
         if len(parts) < 2:
             await self.send_admin(user)
         elif parts[1] == "stats":
-            await self.send_stats(user)
+            await self.send_tag_stats(user)
         elif parts[1] == "users":
             users = await self.repo.list_users()
             lines = ["👥 Последние пользователи:"]
@@ -711,13 +805,17 @@ class DatingService:
         created = await self.repo.add_source_tag(tag, user["id"])
         status = "создана" if created else "уже существует"
         await self.tg.send_message(user["chat_id"], f"Метка {tag} {status}.")
-        await self.send_stats(user)
+        await self.send_tag_stats(user)
 
-    async def send_stats(self, user: asyncpg.Record) -> None:
-        rows = await self.repo.tag_stats()
+    async def send_tag_stats(self, user: asyncpg.Record, raw_tag: str = "") -> None:
+        tag = raw_tag.strip()
+        rows = await self.repo.tag_stats(tag or None)
         lines = ["📊 Статистика по всем меткам"]
+        if tag:
+            lines = [f"📊 Статистика по метке {tag}"]
         if not rows:
-            lines.append("• без метки | users 0 | offer 0 (0.0%) | buyers 0 | conv 0.0% | sum 0 | LTV 0.0")
+            label = tag or "без метки"
+            lines.append(f"• {label} | users 0 | offer 0 (0.0%) | buyers 0 | conv 0.0% | sum 0 | LTV 0.0")
         for row in rows:
             users = int(row["users"] or 0)
             offer = int(row["offer"] or 0)
@@ -732,6 +830,173 @@ class DatingService:
                 f"buyers {buyers} | conv {conv:.1f}% | sum {total} | LTV {ltv:.1f}"
             )
         await self.tg.send_message(user["chat_id"], "\n".join(lines))
+
+    async def send_bot_stats(self, user: asyncpg.Record) -> None:
+        stats = await self.repo.stats()
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "📊 Общая статистика",
+                    f"Пользователи: {stats['users']}",
+                    f"Активные видео: {stats['active_videos']}",
+                    f"Лайки: {stats['likes']}",
+                    f"Жалобы: {stats['reports']}",
+                ]
+            ),
+        )
+
+    async def send_substats(self, user: asyncpg.Record) -> None:
+        stats = await self.repo.subscription_stats()
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "💎 Статистика подписок",
+                    f"Активные: {stats['active']}",
+                    f"Истекшие: {stats['expired']}",
+                    f"Оплаты: {stats['payments']}",
+                    f"Сумма: {stats['sum']} ⭐",
+                ]
+            ),
+        )
+
+    async def send_choice_stats(self, user: asyncpg.Record) -> None:
+        rows = await self.repo.choice_stats()
+        labels = {"female": "девушки", "male": "парни", "any": "не важно", "empty": "не выбрано"}
+        lines = ["👩 Статистика выбора девушек"]
+        lines.extend([f"• {labels.get(row['choice'], row['choice'])}: {row['users']}" for row in rows])
+        await self.tg.send_message(user["chat_id"], "\n".join(lines))
+
+    async def send_adtag(self, user: asyncpg.Record, raw_tag: str) -> None:
+        tag = raw_tag.strip()
+        if not self.is_source_tag(tag):
+            await self.tg.send_message(user["chat_id"], "Метка должна быть 1-64 символа: латиница, цифры, _ или -.")
+            return
+        await self.repo.add_source_tag(tag, user["id"])
+        bot_username = await self.tg.username()
+        await self.tg.send_message(user["chat_id"], self.bot_deep_link(bot_username, tag))
+
+    async def admin_claim(self, user: asyncpg.Record, secret: str) -> None:
+        if secret.strip() != self.admin_claim_secret:
+            await self.tg.send_message(user["chat_id"], "Неверный секрет.")
+            return
+        await self.repo.add_admin(int(user["telegram_id"]), user["id"])
+        self.admin_ids.add(int(user["telegram_id"]))
+        await self.tg.send_message(user["chat_id"], "Вы добавлены в админы.")
+
+    async def admin_add(self, user: asyncpg.Record, raw_id: str) -> None:
+        try:
+            telegram_id = int(raw_id.strip())
+        except ValueError:
+            await self.tg.send_message(user["chat_id"], "Использование: /admin_add id")
+            return
+        created = await self.repo.add_admin(telegram_id, user["id"])
+        self.admin_ids.add(telegram_id)
+        await self.tg.send_message(user["chat_id"], f"Админ {telegram_id} {'добавлен' if created else 'уже был добавлен'}.")
+
+    async def admin_del(self, user: asyncpg.Record, raw_id: str) -> None:
+        try:
+            telegram_id = int(raw_id.strip())
+        except ValueError:
+            await self.tg.send_message(user["chat_id"], "Использование: /admin_del id")
+            return
+        deleted = await self.repo.del_admin(telegram_id)
+        self.admin_ids.discard(telegram_id)
+        await self.tg.send_message(user["chat_id"], f"Админ {telegram_id} {'удален' if deleted else 'не найден'}.")
+
+    async def admin_list(self, user: asyncpg.Record) -> None:
+        db_admins = await self.repo.admin_ids()
+        all_admins = sorted(self.admin_ids | db_admins)
+        await self.tg.send_message(user["chat_id"], "Админы:\n" + "\n".join(str(admin_id) for admin_id in all_admins))
+
+    async def push_leads(self, user: asyncpg.Record, raw_limit: str) -> None:
+        try:
+            limit = int(raw_limit.strip() or "100")
+        except ValueError:
+            limit = 100
+        targets = await self.repo.push_targets_without_premium(max(1, min(limit, 1000)))
+        text = "💎 Premium открывает контакты и возможность писать первым. Нажмите /subscription, чтобы подключить доступ."
+        sent, failed = await self.send_push(targets, text)
+        await self.repo.save_push_log("leads", text, user["id"], len(targets), sent, failed)
+        await self.tg.send_message(user["chat_id"], f"Пуш лидам: отправлено {sent}, ошибок {failed}.")
+
+    async def push_active(self, user: asyncpg.Record, text: str) -> None:
+        if not text.strip():
+            await self.tg.send_message(user["chat_id"], "Использование: /push_active текст")
+            return
+        targets = await self.repo.active_users()
+        admin_targets = [{"chat_id": admin_id} for admin_id in self.admin_ids]
+        sent, failed = await self.send_push([*targets, *admin_targets], text.strip())
+        await self.repo.save_push_log("active", text.strip(), user["id"], len(targets) + len(admin_targets), sent, failed)
+        await self.tg.send_message(user["chat_id"], f"Пуш активным: отправлено {sent}, ошибок {failed}.")
+
+    async def send_push(self, targets: list[Any], text: str) -> tuple[int, int]:
+        sent = 0
+        failed = 0
+        seen: set[int] = set()
+        for target in targets:
+            chat_id = int(target["chat_id"])
+            if chat_id in seen:
+                continue
+            seen.add(chat_id)
+            try:
+                await self.tg.send_message(chat_id, text)
+                sent += 1
+            except Exception:
+                failed += 1
+        return sent, failed
+
+    async def send_push_stats(self, user: asyncpg.Record) -> None:
+        stats = await self.repo.push_stats()
+        await self.tg.send_message(
+            user["chat_id"],
+            "\n".join(
+                [
+                    "📣 Диагностика пушей",
+                    f"Пользователи: {stats['users']}",
+                    f"Активные: {stats['active_users']}",
+                    f"Активная подписка: {stats['active_premium']}",
+                    f"Последний пуш: {stats['last_kind'] or '-'}",
+                    f"Отправлено: {stats['last_sent']}",
+                    f"Ошибок: {stats['last_failed']}",
+                ]
+            ),
+        )
+
+    async def send_payments(self, user: asyncpg.Record) -> None:
+        rows = await self.repo.recent_payments()
+        lines = ["💳 Последние оплаты"]
+        if not rows:
+            lines.append("Оплат пока нет.")
+        for row in rows:
+            name = row["name"] or (f"@{row['username']}" if row["username"] else str(row["telegram_id"] or row["user_id"]))
+            lines.append(f"#{row['id']} user {row['user_id']} {name} | {row['amount']} ⭐ | {format_datetime(row['created_at'])}")
+        await self.tg.send_message(user["chat_id"], "\n".join(lines))
+
+    async def send_errors(self, user: asyncpg.Record) -> None:
+        rows = await self.repo.recent_errors()
+        lines = ["⚠️ Последние ошибки"]
+        if not rows:
+            lines.append("Ошибок нет.")
+        for row in rows:
+            first_line = (row["error"] or "").splitlines()[0][:180]
+            lines.append(f"#{row['id']} {format_datetime(row['created_at'])}: {first_line}")
+        await self.tg.send_message(user["chat_id"], "\n".join(lines))
+
+    async def admin_reset_payments(self, user: asyncpg.Record, raw_arg: str) -> None:
+        arg = raw_arg.strip()
+        if arg == "all":
+            count = await self.repo.reset_payments()
+            await self.tg.send_message(user["chat_id"], f"Сброшено оплат: {count}.")
+            return
+        try:
+            user_id = int(arg)
+        except ValueError:
+            await self.tg.send_message(user["chat_id"], "Использование: /admin_reset_payments all или /admin_reset_payments id")
+            return
+        count = await self.repo.reset_payments(user_id)
+        await self.tg.send_message(user["chat_id"], f"Сброшено оплат пользователя {user_id}: {count}.")
 
     async def send_user_card(self, admin: asyncpg.Record, raw_id: str) -> None:
         try:

@@ -20,6 +20,7 @@ class Settings:
     http_host: str
     http_port: int
     admin_telegram_ids: set[int]
+    admin_claim_secret: str
     premium_price: str
 
 
@@ -71,5 +72,6 @@ def load_settings() -> Settings:
         http_host=os.getenv("HTTP_HOST", "0.0.0.0"),
         http_port=int(os.getenv("HTTP_PORT", "8080")),
         admin_telegram_ids=DEFAULT_ADMIN_TELEGRAM_IDS | _int_set(os.getenv("ADMIN_TELEGRAM_IDS", "")),
+        admin_claim_secret=os.getenv("ADMIN_CLAIM_SECRET", "секрет").strip(),
         premium_price=os.getenv("PREMIUM_PRICE", "199").strip(),
     )

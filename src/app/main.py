@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -29,14 +30,17 @@ state = AppState()
 async def lifespan(_: FastAPI):
     state.settings = load_settings()
     state.repo = await Repository.connect(state.settings.database_url, state.settings.database_schema)
+    await state.repo.ensure_admins(state.settings.admin_telegram_ids)
+    admin_ids = state.settings.admin_telegram_ids | await state.repo.admin_ids()
     state.tg = TelegramClient(state.settings.telegram_bot_token)
     state.service = DatingService(
         state.repo,
         state.tg,
-        state.settings.admin_telegram_ids,
+        admin_ids,
+        state.settings.admin_claim_secret,
         state.settings.premium_price,
     )
-    logger.info("admin telegram ids loaded: %s", sorted(state.settings.admin_telegram_ids))
+    logger.info("admin telegram ids loaded: %s", sorted(admin_ids))
 
     if state.settings.telegram_bot_token and state.settings.public_base_url.startswith("https://"):
         webhook_url = f"{state.settings.public_base_url}/webhook/telegram"
@@ -80,5 +84,9 @@ async def telegram_webhook(
         await state.service.handle_update(update)
     except Exception:
         logger.exception("failed to handle update")
+        try:
+            await state.repo.record_error(traceback.format_exc())
+        except Exception:
+            logger.exception("failed to record error")
         raise HTTPException(status_code=500, detail="handler error") from None
     return {"status": "ok"}

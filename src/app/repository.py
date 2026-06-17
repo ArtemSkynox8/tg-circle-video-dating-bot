@@ -105,6 +105,29 @@ CREATE TABLE IF NOT EXISTS source_tags (
     created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    telegram_id BIGINT PRIMARY KEY,
+    added_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS push_logs (
+    id BIGSERIAL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    requested_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    recipients INTEGER NOT NULL DEFAULT 0,
+    sent INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bot_errors (
+    id BIGSERIAL PRIMARY KEY,
+    error TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -137,6 +160,42 @@ class Repository:
 
     async def close(self) -> None:
         await self.pool.close()
+
+    async def ensure_admins(self, telegram_ids: set[int]) -> None:
+        if not telegram_ids:
+            return
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO admin_users (telegram_id)
+                VALUES ($1)
+                ON CONFLICT DO NOTHING
+                """,
+                [(telegram_id,) for telegram_id in telegram_ids],
+            )
+
+    async def admin_ids(self) -> set[int]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT telegram_id FROM admin_users ORDER BY telegram_id")
+            return {int(row["telegram_id"]) for row in rows}
+
+    async def add_admin(self, telegram_id: int, added_by_user_id: int | None = None) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                INSERT INTO admin_users (telegram_id, added_by_user_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
+                """,
+                telegram_id,
+                added_by_user_id,
+            )
+            return result.endswith("1")
+
+    async def del_admin(self, telegram_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM admin_users WHERE telegram_id = $1", telegram_id)
+            return result.endswith("1")
 
     async def upsert_user(self, tg_user: dict[str, Any], chat_id: int) -> asyncpg.Record:
         telegram_id = int(tg_user["id"])
@@ -537,7 +596,7 @@ class Repository:
     async def reset_all(self) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("TRUNCATE tag_events, referral_contact_opens, reports, hidden_matches, viewed_videos, actions, videos, users RESTART IDENTITY CASCADE")
+                await conn.execute("TRUNCATE push_logs, bot_errors, tag_events, referral_contact_opens, reports, hidden_matches, viewed_videos, actions, videos, users RESTART IDENTITY CASCADE")
 
     async def stats(self) -> dict[str, int]:
         async with self.pool.acquire() as conn:
@@ -552,7 +611,7 @@ class Repository:
             )
             return dict(row)
 
-    async def tag_stats(self) -> list[asyncpg.Record]:
+    async def tag_stats(self, source_tag: str | None = None) -> list[asyncpg.Record]:
         async with self.pool.acquire() as conn:
             return await conn.fetch(
                 """
@@ -586,9 +645,118 @@ class Repository:
                 FROM all_tags
                 LEFT JOIN user_stats USING (source_tag)
                 LEFT JOIN event_stats USING (source_tag)
+                WHERE $1::text IS NULL OR all_tags.source_tag = $1
                 ORDER BY users DESC, all_tags.source_tag
+                """,
+                source_tag,
+            )
+
+    async def subscription_stats(self) -> dict[str, int]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    (SELECT count(*) FROM users WHERE is_premium = TRUE AND (premium_expires_at IS NULL OR premium_expires_at > now()))::int AS active,
+                    (SELECT count(*) FROM users WHERE is_premium = TRUE AND premium_expires_at <= now())::int AS expired,
+                    (SELECT count(*) FROM tag_events WHERE event = 'purchase')::int AS payments,
+                    (SELECT coalesce(sum(amount), 0) FROM tag_events WHERE event = 'purchase')::int AS sum
                 """
             )
+            return dict(row)
+
+    async def choice_stats(self) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT coalesce(nullif(preferred_gender, ''), 'empty') AS choice, count(*)::int AS users
+                FROM users
+                GROUP BY 1
+                ORDER BY users DESC, choice
+                """
+            )
+
+    async def push_targets_without_premium(self, limit: int) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT *
+                FROM users
+                WHERE status = 'active'
+                  AND (is_premium = FALSE OR premium_expires_at <= now())
+                ORDER BY updated_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+
+    async def active_users(self) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch("SELECT * FROM users WHERE status = 'active' ORDER BY updated_at DESC")
+
+    async def save_push_log(self, kind: str, text: str, requested_by_user_id: int, recipients: int, sent: int, failed: int) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO push_logs (kind, text, requested_by_user_id, recipients, sent, failed)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                kind,
+                text,
+                requested_by_user_id,
+                recipients,
+                sent,
+                failed,
+            )
+
+    async def push_stats(self) -> dict[str, int | str]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    (SELECT count(*) FROM users)::int AS users,
+                    (SELECT count(*) FROM users WHERE status = 'active')::int AS active_users,
+                    (SELECT count(*) FROM users WHERE is_premium = TRUE AND (premium_expires_at IS NULL OR premium_expires_at > now()))::int AS active_premium,
+                    coalesce((SELECT kind FROM push_logs ORDER BY id DESC LIMIT 1), '') AS last_kind,
+                    coalesce((SELECT sent FROM push_logs ORDER BY id DESC LIMIT 1), 0)::int AS last_sent,
+                    coalesce((SELECT failed FROM push_logs ORDER BY id DESC LIMIT 1), 0)::int AS last_failed
+                """
+            )
+            return dict(row)
+
+    async def recent_payments(self, limit: int = 20) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT e.*, u.telegram_id, u.username, u.name
+                FROM tag_events e
+                LEFT JOIN users u ON u.id = e.user_id
+                WHERE e.event = 'purchase'
+                ORDER BY e.id DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+
+    async def reset_payments(self, user_id: int | None = None) -> int:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                if user_id is None:
+                    count = int(await conn.fetchval("SELECT count(*) FROM tag_events WHERE event = 'purchase'") or 0)
+                    await conn.execute("DELETE FROM tag_events WHERE event = 'purchase'")
+                    await conn.execute("UPDATE users SET is_premium = FALSE, premium_expires_at = NULL")
+                    return count
+                count = int(await conn.fetchval("SELECT count(*) FROM tag_events WHERE event = 'purchase' AND user_id = $1", user_id) or 0)
+                await conn.execute("DELETE FROM tag_events WHERE event = 'purchase' AND user_id = $1", user_id)
+                await conn.execute("UPDATE users SET is_premium = FALSE, premium_expires_at = NULL WHERE id = $1", user_id)
+                return count
+
+    async def record_error(self, error: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("INSERT INTO bot_errors (error) VALUES ($1)", error[-4000:])
+
+    async def recent_errors(self, limit: int = 20) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch("SELECT * FROM bot_errors ORDER BY id DESC LIMIT $1", limit)
 
     async def list_users(self, limit: int = 20) -> list[asyncpg.Record]:
         async with self.pool.acquire() as conn:
