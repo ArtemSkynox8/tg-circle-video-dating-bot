@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -22,6 +24,21 @@ STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
+STARS_CURRENCY = "XTR"
+
+
+@dataclass(frozen=True)
+class PremiumPlan:
+    code: str
+    title: str
+    stars: int
+    days: int
+
+
+PREMIUM_PLANS = {
+    "3_days": PremiumPlan("3_days", "Premium на 3 дня", 1, 3),
+    "week": PremiumPlan("week", "Premium на неделю", 199, 7),
+}
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
 NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
@@ -35,6 +52,9 @@ class DatingService:
         self.premium_price = premium_price or "199"
 
     async def handle_update(self, update: dict[str, Any]) -> None:
+        if pre_checkout_query := update.get("pre_checkout_query"):
+            await self.handle_pre_checkout_query(pre_checkout_query)
+            return
         if message := update.get("message"):
             await self.handle_message(message)
             return
@@ -48,6 +68,10 @@ class DatingService:
             return
 
         user = await self.repo.upsert_user(from_user, int(chat["id"]))
+        if successful_payment := message.get("successful_payment"):
+            await self.handle_successful_payment(user, successful_payment)
+            return
+
         text = (message.get("text") or "").strip()
 
         if text.startswith("/start"):
@@ -119,7 +143,7 @@ class DatingService:
                 await self.save_preferred_gender(user, parts[1])
             case "like" | "like_only" | "next" if len(parts) == 3:
                 action = parts[0]
-                await self.handle_browse_action(user, int(parts[1]), int(parts[2]), action)
+                await self.handle_browse_action(user, int(parts[1]), int(parts[2]), action, message)
             case "report" if len(parts) == 3:
                 await self.tg.send_message(chat_id, "Выберите причину жалобы:", inline_keyboard=keyboards.report(int(parts[1]), int(parts[2])))
             case "report_reason" if len(parts) >= 4:
@@ -166,9 +190,9 @@ class DatingService:
             case "premium" | "subscription" | "premium_pay_stub":
                 await self.send_subscription(user)
             case "premium_3_days":
-                await self.send_payment_stub(user, "49 ₽ / 3 дня")
+                await self.send_stars_invoice(user, PREMIUM_PLANS["3_days"])
             case "premium_week":
-                await self.send_payment_stub(user, "199 ₽ / неделя")
+                await self.send_stars_invoice(user, PREMIUM_PLANS["week"])
             case "invite_friend":
                 await self.send_invite_friend(user)
             case "open_random_contact":
@@ -273,20 +297,25 @@ class DatingService:
             fresh["chat_id"],
             candidate["file_id"],
             candidate["media_type"],
-            inline_keyboard=keyboards.browse(candidate["video_id"], candidate["owner_id"], can_write=bool(fresh["is_premium"])),
+            inline_keyboard=keyboards.browse(candidate["video_id"], candidate["owner_id"], can_write=self.premium_active(fresh)),
         )
 
-    async def handle_browse_action(self, user: asyncpg.Record, video_id: int, owner_id: int, action: str) -> None:
+    async def handle_browse_action(self, user: asyncpg.Record, video_id: int, owner_id: int, action: str, message: dict[str, Any]) -> None:
         if action in {"like", "like_only"}:
             await self.repo.record_action(user["id"], owner_id, video_id, action)
+            await self.react_to_browse_message(user["chat_id"], message)
+            await asyncio.sleep(1)
             if await self.repo.mutual_like(user["id"], owner_id):
                 await self.announce_match(user, owner_id)
-            else:
-                await self.tg.send_message(user["chat_id"], "Лайк отправлен.", inline_keyboard=keyboards.main_menu())
         elif action == "next":
             await self.repo.record_action(user["id"], owner_id, video_id, "next")
         await self.complete_referral(user)
         await self.send_next_candidate(user)
+
+    async def react_to_browse_message(self, chat_id: int, message: dict[str, Any]) -> None:
+        message_id = int(message.get("message_id") or 0)
+        if message_id:
+            await self.tg.set_message_reaction(chat_id, message_id, "❤")
 
     async def announce_match(self, user: asyncpg.Record, owner_id: int) -> None:
         other = await self.repo.get_user(owner_id)
@@ -344,7 +373,7 @@ class DatingService:
         other = await self.repo.get_user(matched_user_id)
         if not other:
             return
-        if not user["is_premium"]:
+        if not self.premium_active(user):
             await self.send_subscription(user)
             return
         if other["contact_phone"]:
@@ -383,7 +412,7 @@ class DatingService:
     async def send_subscription(self, user: asyncpg.Record) -> None:
         bot_username = await self.tg.username()
         offer_url = self.bot_deep_link(bot_username, "offer")
-        status_text = "Подписка подключена" if user["is_premium"] else "Подписка не подключена"
+        status_text = self.premium_status_text(user)
         await self.tg.send_message(
             user["chat_id"],
             "\n".join(
@@ -397,8 +426,8 @@ class DatingService:
                     "",
                     "<b>Подписка с автосписанием:</b>",
                     "• 🎁 Пригласить друга — получить 1 рандомный контакт из последних 10 кружков;",
-                    "• 🔥 49 ₽ / 3 дня;",
-                    "• 💎 199 ₽ / неделя.",
+                    "• 🔥 1 ⭐ / 3 дня;",
+                    "• 💎 199 ⭐ / неделя.",
                     "",
                     f'Переходя к оплате, вы соглашаетесь с <a href="{offer_url}">офертой</a>.',
                     "",
@@ -457,12 +486,43 @@ class DatingService:
             inline_keyboard=keyboards.random_contact(name, self.write_url(candidate)),
         )
 
-    async def send_payment_stub(self, user: asyncpg.Record, plan: str) -> None:
+    async def send_stars_invoice(self, user: asyncpg.Record, plan: PremiumPlan) -> None:
+        await self.tg.send_invoice(
+            user["chat_id"],
+            plan.title,
+            f"Доступ к Premium-функциям на {plan.days} дн.",
+            f"premium:{plan.code}:{user['id']}",
+            plan.stars,
+        )
+
+    async def handle_pre_checkout_query(self, query: dict[str, Any]) -> None:
+        payload = query.get("invoice_payload") or ""
+        plan = self.plan_from_payload(payload)
+        if not plan or query.get("currency") != STARS_CURRENCY or int(query.get("total_amount") or 0) != plan.stars:
+            await self.tg.answer_pre_checkout_query(query["id"], False, "Не удалось проверить тариф. Попробуйте еще раз.")
+            return
+        await self.tg.answer_pre_checkout_query(query["id"], True)
+
+    async def handle_successful_payment(self, user: asyncpg.Record, payment: dict[str, Any]) -> None:
+        payload = payment.get("invoice_payload") or ""
+        plan = self.plan_from_payload(payload)
+        if not plan or payment.get("currency") != STARS_CURRENCY or int(payment.get("total_amount") or 0) != plan.stars:
+            await self.tg.send_message(user["chat_id"], "Платеж получен, но тариф не распознан. Напишите в поддержку.")
+            return
+        updated = await self.repo.grant_premium_days(user["id"], plan.days)
         await self.tg.send_message(
             user["chat_id"],
-            f"Оплата тарифа {plan} пока подключается. Нажимая оплату, пользователь соглашается с офертой.",
-            inline_keyboard=[[{"text": "📄 Оферта", "callback_data": "offer"}], [{"text": "☰ Главное меню", "callback_data": "main_menu"}]],
+            f"Premium подключен на {plan.days} дн. Спасибо за оплату ⭐",
+            inline_keyboard=keyboards.main_menu(),
         )
+        if updated and updated["premium_expires_at"]:
+            await self.tg.send_message(user["chat_id"], "Доступ открыт до " + format_datetime(updated["premium_expires_at"]))
+
+    def plan_from_payload(self, payload: str) -> PremiumPlan | None:
+        parts = payload.split(":")
+        if len(parts) != 3 or parts[0] != "premium":
+            return None
+        return PREMIUM_PLANS.get(parts[1])
 
     async def send_offer(self, user: asyncpg.Record) -> None:
         await self.tg.send_message(
@@ -551,8 +611,25 @@ class DatingService:
 
     def contact_keyboard(self, user: asyncpg.Record, other: asyncpg.Record) -> list[list[dict]]:
         url = f"https://t.me/{other['username']}" if other["username"] else None
-        can_get_contact = bool(user["is_premium"])
+        can_get_contact = self.premium_active(user)
         return keyboards.match_actions(other["id"], can_get_contact, url)
+
+    @staticmethod
+    def premium_active(user: asyncpg.Record) -> bool:
+        expires_at = user.get("premium_expires_at") if hasattr(user, "get") else user["premium_expires_at"]
+        if expires_at:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            return expires_at > datetime.now(timezone.utc)
+        return bool(user["is_premium"])
+
+    def premium_status_text(self, user: asyncpg.Record) -> str:
+        if not self.premium_active(user):
+            return "Подписка не подключена"
+        expires_at = user.get("premium_expires_at") if hasattr(user, "get") else user["premium_expires_at"]
+        if expires_at:
+            return "Подписка подключена до " + format_datetime(expires_at)
+        return "Подписка подключена"
 
     def profile_url(self, user: asyncpg.Record, bot_username: str) -> str:
         return self.bot_deep_link(bot_username, f"match_video_{user['id']}")
@@ -586,3 +663,9 @@ def parse_payload_id(payload: str, prefix: str) -> int:
         return int(payload.removeprefix(prefix))
     except ValueError:
         return 0
+
+
+def format_datetime(value: datetime) -> str:
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+    return value.strftime("%d.%m.%Y %H:%M UTC")

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_contact_credits INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_rewarded_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expires_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -152,6 +153,21 @@ class Repository:
     async def set_premium(self, user_id: int, is_premium: bool) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = $2, updated_at = now() WHERE id = $1", user_id, is_premium)
+
+    async def grant_premium_days(self, user_id: int, days: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET is_premium = TRUE,
+                    premium_expires_at = greatest(coalesce(premium_expires_at, now()), now()) + ($2::text || ' days')::interval,
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
+                days,
+            )
 
     async def set_referrer(self, user_id: int, referrer_user_id: int) -> None:
         if user_id == referrer_user_id:

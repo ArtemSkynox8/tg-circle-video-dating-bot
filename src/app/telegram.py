@@ -31,7 +31,7 @@ class TelegramClient:
             {
                 "url": url,
                 "secret_token": secret_token,
-                "allowed_updates": ["message", "callback_query"],
+                "allowed_updates": ["message", "callback_query", "pre_checkout_query"],
                 "drop_pending_updates": False,
             },
         )
@@ -122,6 +122,42 @@ class TelegramClient:
         data = await self.call("sendVideo", payload)
         return data.get("result", {}).get("message_id")
 
+    async def send_invoice(
+        self,
+        chat_id: int,
+        title: str,
+        description: str,
+        payload: str,
+        amount: int,
+    ) -> int | None:
+        data = await self.call(
+            "sendInvoice",
+            {
+                "chat_id": chat_id,
+                "title": title,
+                "description": description,
+                "payload": payload,
+                "provider_token": "",
+                "currency": "XTR",
+                "prices": [{"label": title, "amount": amount}],
+            },
+        )
+        return data.get("result", {}).get("message_id")
+
+    async def set_message_reaction(self, chat_id: int, message_id: int, emoji: str = "❤") -> None:
+        try:
+            await self.call(
+                "setMessageReaction",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reaction": [{"type": "emoji", "emoji": emoji}],
+                    "is_big": True,
+                },
+            )
+        except Exception:
+            return
+
     async def send_dice(self, chat_id: int, emoji: str = "🎲") -> int | None:
         data = await self.call("sendDice", {"chat_id": chat_id, "emoji": emoji})
         return data.get("result", {}).get("message_id")
@@ -138,6 +174,12 @@ class TelegramClient:
         except httpx.HTTPStatusError:
             # Telegram callback IDs expire quickly. The user action should still run.
             return
+
+    async def answer_pre_checkout_query(self, pre_checkout_query_id: str, ok: bool, error_message: str = "") -> None:
+        payload: dict[str, Any] = {"pre_checkout_query_id": pre_checkout_query_id, "ok": ok}
+        if error_message:
+            payload["error_message"] = error_message
+        await self.call("answerPreCheckoutQuery", payload)
 
 
 def button(text: str, callback_data: str | None = None, url: str | None = None) -> dict[str, Any]:
