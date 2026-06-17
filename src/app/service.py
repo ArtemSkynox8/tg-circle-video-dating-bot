@@ -105,8 +105,10 @@ class DatingService:
             await self.send_admin(user)
         elif text == "/botstats" and self.is_admin(user):
             await self.send_stats(user)
-        elif text.startswith("/addtag ") and self.is_admin(user):
+        elif text.startswith("/addtag "):
             await self.add_tag(user, text.removeprefix("/addtag ").strip())
+        elif text == "/myid":
+            await self.tg.send_message(user["chat_id"], f"Ваш Telegram ID: {user['telegram_id']}\nChat ID: {user['chat_id']}")
         elif text == "/admin_reset_store confirm" and self.is_admin(user):
             await self.repo.reset_all()
             await self.tg.send_message(user["chat_id"], "База очищена.")
@@ -673,6 +675,12 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "Для полной очистки базы отправьте текстом:\n/admin_reset_store confirm")
 
     async def add_tag(self, user: asyncpg.Record, raw_tag: str) -> None:
+        if not self.is_admin(user):
+            await self.tg.send_message(
+                user["chat_id"],
+                f"Нет доступа. Ваш Telegram ID: {user['telegram_id']}\nChat ID: {user['chat_id']}",
+            )
+            return
         tag = raw_tag.strip()
         if not self.is_source_tag(tag):
             await self.tg.send_message(user["chat_id"], "Метка должна быть 1-64 символа: латиница, цифры, _ или -.")
@@ -759,7 +767,7 @@ class DatingService:
         return f"tg://user?id={user['telegram_id']}"
 
     def is_admin(self, user: asyncpg.Record) -> bool:
-        return int(user["telegram_id"]) in self.admin_ids
+        return int(user["telegram_id"]) in self.admin_ids or int(user["chat_id"]) in self.admin_ids
 
     async def notify_like(self, user: asyncpg.Record, owner_id: int, video_id: int) -> None:
         other = await self.repo.get_user(owner_id)
