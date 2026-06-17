@@ -29,6 +29,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_user_id BIGINT REFERENCES us
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_contact_credits INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_rewarded_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS source_tag TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -87,6 +88,17 @@ CREATE TABLE IF NOT EXISTS referral_contact_opens (
     opened_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS tag_events (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    source_tag TEXT NOT NULL DEFAULT '',
+    event TEXT NOT NULL,
+    amount INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS tag_events_source_event_idx ON tag_events (source_tag, event);
 """
 
 
@@ -142,6 +154,19 @@ class Repository:
                 first_name,
             )
 
+    async def set_source_tag(self, user_id: int, source_tag: str) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET source_tag = $2, updated_at = now()
+                WHERE id = $1 AND source_tag = ''
+                RETURNING *
+                """,
+                user_id,
+                source_tag,
+            )
+
     async def get_user_by_telegram_id(self, telegram_id: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow("SELECT * FROM users WHERE telegram_id = $1", telegram_id)
@@ -168,6 +193,20 @@ class Repository:
     async def set_premium(self, user_id: int, is_premium: bool) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = $2, updated_at = now() WHERE id = $1", user_id, is_premium)
+
+    async def cancel_premium(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET is_premium = FALSE,
+                    premium_expires_at = now(),
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
+            )
 
     async def grant_premium_days(self, user_id: int, days: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
@@ -412,6 +451,20 @@ class Repository:
                 reason,
             )
 
+    async def record_tag_event(self, user_id: int, event: str, amount: int = 0) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO tag_events (user_id, source_tag, event, amount)
+                SELECT id, source_tag, $2, $3
+                FROM users
+                WHERE id = $1
+                """,
+                user_id,
+                event,
+                amount,
+            )
+
     async def random_contact_candidate(self, user_id: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
@@ -470,7 +523,7 @@ class Repository:
     async def reset_all(self) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("TRUNCATE referral_contact_opens, reports, hidden_matches, viewed_videos, actions, videos, users RESTART IDENTITY CASCADE")
+                await conn.execute("TRUNCATE tag_events, referral_contact_opens, reports, hidden_matches, viewed_videos, actions, videos, users RESTART IDENTITY CASCADE")
 
     async def stats(self) -> dict[str, int]:
         async with self.pool.acquire() as conn:
@@ -484,6 +537,42 @@ class Repository:
                 """
             )
             return dict(row)
+
+    async def tag_stats(self) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                WITH user_stats AS (
+                    SELECT source_tag, count(*)::int AS users
+                    FROM users
+                    GROUP BY source_tag
+                ),
+                event_stats AS (
+                    SELECT
+                        source_tag,
+                        count(*) FILTER (WHERE event = 'offer')::int AS offer,
+                        count(DISTINCT user_id) FILTER (WHERE event = 'purchase')::int AS buyers,
+                        coalesce(sum(amount) FILTER (WHERE event = 'purchase'), 0)::int AS sum
+                    FROM tag_events
+                    GROUP BY source_tag
+                ),
+                all_tags AS (
+                    SELECT source_tag FROM user_stats
+                    UNION
+                    SELECT source_tag FROM event_stats
+                )
+                SELECT
+                    all_tags.source_tag,
+                    coalesce(user_stats.users, 0)::int AS users,
+                    coalesce(event_stats.offer, 0)::int AS offer,
+                    coalesce(event_stats.buyers, 0)::int AS buyers,
+                    coalesce(event_stats.sum, 0)::int AS sum
+                FROM all_tags
+                LEFT JOIN user_stats USING (source_tag)
+                LEFT JOIN event_stats USING (source_tag)
+                ORDER BY users DESC, all_tags.source_tag
+                """
+            )
 
     async def list_users(self, limit: int = 20) -> list[asyncpg.Record]:
         async with self.pool.acquire() as conn:

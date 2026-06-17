@@ -25,6 +25,7 @@ MATCHES_PAGE_SIZE = 10
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 STARS_CURRENCY = "XTR"
+TAG_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -67,12 +68,21 @@ class DatingService:
         if not from_user or chat.get("type") != "private":
             return
 
+        existing_user = await self.repo.get_user_by_telegram_id(int(from_user["id"]))
         user = await self.repo.upsert_user(from_user, int(chat["id"]))
         if successful_payment := message.get("successful_payment"):
             await self.handle_successful_payment(user, successful_payment)
             return
+        if refunded_payment := message.get("refunded_payment"):
+            await self.handle_refunded_payment(user, refunded_payment)
+            return
 
         text = (message.get("text") or "").strip()
+        if text.startswith("/start"):
+            payload = text.removeprefix("/start").strip()
+            user = await self.apply_start_tag(user, payload)
+        if not existing_user:
+            await self.notify_admins("👤 Новый пользователь\n" + self.user_log_line(user))
 
         if text.startswith("/start"):
             payload = text.removeprefix("/start").strip()
@@ -98,6 +108,8 @@ class DatingService:
             await self.send_admin(user)
         elif text == "/botstats" and self.is_admin(user):
             await self.send_stats(user)
+        elif text.startswith("/cancel_premium ") and self.is_admin(user):
+            await self.cancel_premium_by_admin(user, text.removeprefix("/cancel_premium ").strip())
         elif text == "/admin_reset_store confirm" and self.is_admin(user):
             await self.repo.reset_all()
             await self.tg.send_message(user["chat_id"], "База очищена.")
@@ -168,6 +180,8 @@ class DatingService:
                 await self.repo.activate_video(user["id"], int(parts[1]))
                 await self.repo.set_flow(user["id"], "")
                 await self.tg.send_message(user["chat_id"], "Кружок сохранен.", inline_keyboard=keyboards.main_menu())
+                fresh = await self.repo.get_user(user["id"]) or user
+                await self.notify_admins("🎥 Пользователь записал кружок\n" + self.user_log_line(fresh))
             case "rewrite_video":
                 await self.prompt_video(user, rewrite=True)
             case "edit_profile" | "edit_profile_menu":
@@ -312,8 +326,10 @@ class DatingService:
         fresh = await self.repo.get_user(user["id"]) or user
         if action == "like" and self.premium_active(fresh):
             await self.open_contact_as_match(fresh, owner_id, video_id)
+            await self.notify_like(fresh, owner_id, video_id)
         elif action in {"like", "like_only"}:
             await self.repo.record_action(user["id"], owner_id, video_id, action)
+            await self.notify_like(fresh, owner_id, video_id)
             await self.react_to_browse_message(user["chat_id"], message)
             await asyncio.sleep(1)
             if await self.repo.mutual_like(user["id"], owner_id):
@@ -401,6 +417,12 @@ class DatingService:
         else:
             await self.start(user)
 
+    async def apply_start_tag(self, user: asyncpg.Record, payload: str) -> asyncpg.Record:
+        if not payload or not self.is_source_tag(payload):
+            return user
+        updated = await self.repo.set_source_tag(user["id"], payload)
+        return updated or user
+
     async def send_match_contact(self, user: asyncpg.Record, matched_user_id: int) -> None:
         other = await self.repo.get_user(matched_user_id)
         if not other:
@@ -446,6 +468,7 @@ class DatingService:
         if self.premium_active(fresh):
             await self.send_active_subscription(fresh)
             return
+        await self.repo.record_tag_event(fresh["id"], "offer")
         bot_username = await self.tg.username()
         offer_url = self.bot_deep_link(bot_username, "offer")
         status_text = self.premium_status_text(fresh)
@@ -568,11 +591,26 @@ class DatingService:
         updated = await self.repo.grant_premium_days(user["id"], plan.days)
         if updated:
             user = updated
+        await self.repo.record_tag_event(user["id"], "purchase", plan.stars)
+        await self.notify_admins(
+            f"💎 Пользователь подписался\n{self.user_log_line(user)}\nТариф: {plan.title}\nСумма: {plan.stars} ⭐"
+        )
         target = self.target_from_payload(payload)
         if target:
             video_id, owner_id = target
             await self.open_contact_as_match(user, owner_id, video_id)
         await self.send_active_subscription(user)
+
+    async def handle_refunded_payment(self, user: asyncpg.Record, payment: dict[str, Any]) -> None:
+        updated = await self.repo.cancel_premium(user["id"])
+        if updated:
+            user = updated
+        await self.repo.record_tag_event(user["id"], "cancel")
+        charge_id = payment.get("telegram_payment_charge_id") or ""
+        await self.notify_admins(
+            f"🚫 Пользователь отменил подписку\n{self.user_log_line(user)}\nПлатеж: {charge_id}"
+        )
+        await self.tg.send_message(user["chat_id"], "Подписка отменена.")
 
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
@@ -649,19 +687,38 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "Для полной очистки базы отправьте текстом:\n/admin_reset_store confirm")
 
     async def send_stats(self, user: asyncpg.Record) -> None:
-        stats = await self.repo.stats()
-        await self.tg.send_message(
-            user["chat_id"],
-            "\n".join(
-                [
-                    "📊 Статистика:",
-                    f"Пользователи: {stats['users']}",
-                    f"Активные видео: {stats['active_videos']}",
-                    f"Лайки: {stats['likes']}",
-                    f"Жалобы: {stats['reports']}",
-                ]
-            ),
-        )
+        rows = await self.repo.tag_stats()
+        lines = ["📊 Статистика по всем меткам"]
+        if not rows:
+            lines.append("• без метки | users 0 | offer 0 (0.0%) | buyers 0 | conv 0.0% | sum 0 | LTV 0.0")
+        for row in rows:
+            users = int(row["users"] or 0)
+            offer = int(row["offer"] or 0)
+            buyers = int(row["buyers"] or 0)
+            total = int(row["sum"] or 0)
+            offer_pct = (offer / users * 100) if users else 0
+            conv = (buyers / users * 100) if users else 0
+            ltv = (total / users) if users else 0
+            label = row["source_tag"] or "без метки"
+            lines.append(
+                f"• {label} | users {users} | offer {offer} ({offer_pct:.1f}%) | "
+                f"buyers {buyers} | conv {conv:.1f}% | sum {total} | LTV {ltv:.1f}"
+            )
+        await self.tg.send_message(user["chat_id"], "\n".join(lines))
+
+    async def cancel_premium_by_admin(self, admin: asyncpg.Record, raw_id: str) -> None:
+        try:
+            user_id = int(raw_id)
+        except ValueError:
+            await self.tg.send_message(admin["chat_id"], "Использование: /cancel_premium USER_ID")
+            return
+        user = await self.repo.cancel_premium(user_id)
+        if not user:
+            await self.tg.send_message(admin["chat_id"], "Пользователь не найден.")
+            return
+        await self.repo.record_tag_event(user["id"], "cancel")
+        await self.tg.send_message(admin["chat_id"], "Подписка отменена.")
+        await self.notify_admins("🚫 Пользователь отменил подписку\n" + self.user_log_line(user))
 
     async def send_user_card(self, admin: asyncpg.Record, raw_id: str) -> None:
         try:
@@ -721,6 +778,32 @@ class DatingService:
 
     def is_admin(self, user: asyncpg.Record) -> bool:
         return int(user["telegram_id"]) in self.admin_ids
+
+    async def notify_like(self, user: asyncpg.Record, owner_id: int, video_id: int) -> None:
+        other = await self.repo.get_user(owner_id)
+        other_text = display_name(other) if other else f"#{owner_id}"
+        await self.notify_admins(
+            f"❤️ Пользователь поставил лайк\n{self.user_log_line(user)}\nКому: {other_text} #{owner_id}\nВидео: #{video_id}"
+        )
+
+    async def notify_admins(self, text: str) -> None:
+        for admin_id in self.admin_ids:
+            try:
+                await self.tg.send_message(admin_id, text)
+            except Exception:
+                continue
+
+    @staticmethod
+    def user_log_line(user: asyncpg.Record) -> str:
+        tag = user["source_tag"] or "без метки"
+        username = f"@{user['username']}" if user["username"] else "без username"
+        return f"#{user['id']} tg={user['telegram_id']} {username} {display_name(user)} | метка: {tag}"
+
+    @staticmethod
+    def is_source_tag(payload: str) -> bool:
+        if payload == "offer" or payload.startswith(("match_video_", "report_user_", "ref_")):
+            return False
+        return bool(TAG_RE.fullmatch(payload))
 
     @staticmethod
     def profile_complete(user: asyncpg.Record) -> bool:
