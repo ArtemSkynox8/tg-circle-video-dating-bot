@@ -105,6 +105,8 @@ class DatingService:
             await self.send_admin(user)
         elif text == "/botstats" and self.is_admin(user):
             await self.send_stats(user)
+        elif text.startswith("/addtag ") and self.is_admin(user):
+            await self.add_tag(user, text.removeprefix("/addtag ").strip())
         elif text == "/admin_reset_store confirm" and self.is_admin(user):
             await self.repo.reset_all()
             await self.tg.send_message(user["chat_id"], "База очищена.")
@@ -669,6 +671,16 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "\n".join(lines))
         elif parts[1] == "reset_store_prompt":
             await self.tg.send_message(user["chat_id"], "Для полной очистки базы отправьте текстом:\n/admin_reset_store confirm")
+
+    async def add_tag(self, user: asyncpg.Record, raw_tag: str) -> None:
+        tag = raw_tag.strip()
+        if not self.is_source_tag(tag):
+            await self.tg.send_message(user["chat_id"], "Метка должна быть 1-64 символа: латиница, цифры, _ или -.")
+            return
+        created = await self.repo.add_source_tag(tag, user["id"])
+        status = "создана" if created else "уже существует"
+        await self.tg.send_message(user["chat_id"], f"Метка {tag} {status}.")
+        await self.send_stats(user)
 
     async def send_stats(self, user: asyncpg.Record) -> None:
         rows = await self.repo.tag_stats()

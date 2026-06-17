@@ -37,7 +37,7 @@ DATABASE_PASSWORD=password
 DATABASE_SSLMODE=verify-full
 DATABASE_SCHEMA=tg_circle_video_dating_bot
 PGSSLROOTCERT=/app/.cloud-certs/root.crt
-ADMIN_TELEGRAM_IDS=123456789
+ADMIN_TELEGRAM_IDS=190796855
 ```
 
 3. Запустите:
@@ -82,6 +82,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 - `/subscription` - Premium
 - `/record` - записать новый кружок
 - `/admin` - админ-панель для ID из `ADMIN_TELEGRAM_IDS`
+- `/addtag yanddir` - создать метку для статистики (админ)
 
 ## Важное про токен
 

@@ -99,6 +99,12 @@ CREATE TABLE IF NOT EXISTS tag_events (
 );
 
 CREATE INDEX IF NOT EXISTS tag_events_source_event_idx ON tag_events (source_tag, event);
+
+CREATE TABLE IF NOT EXISTS source_tags (
+    source_tag TEXT PRIMARY KEY,
+    created_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -156,16 +162,38 @@ class Repository:
 
     async def set_source_tag(self, user_id: int, source_tag: str) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
-            return await conn.fetchrow(
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO source_tags (source_tag)
+                    VALUES ($1)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    source_tag,
+                )
+                return await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET source_tag = $2, updated_at = now()
+                    WHERE id = $1 AND source_tag = ''
+                    RETURNING *
+                    """,
+                    user_id,
+                    source_tag,
+                )
+
+    async def add_source_tag(self, source_tag: str, created_by_user_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
                 """
-                UPDATE users
-                SET source_tag = $2, updated_at = now()
-                WHERE id = $1 AND source_tag = ''
-                RETURNING *
+                INSERT INTO source_tags (source_tag, created_by_user_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
                 """,
-                user_id,
                 source_tag,
+                created_by_user_id,
             )
+            return result.endswith("1")
 
     async def get_user_by_telegram_id(self, telegram_id: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
@@ -543,6 +571,8 @@ class Repository:
                     GROUP BY source_tag
                 ),
                 all_tags AS (
+                    SELECT source_tag FROM source_tags
+                    UNION
                     SELECT source_tag FROM user_stats
                     UNION
                     SELECT source_tag FROM event_stats

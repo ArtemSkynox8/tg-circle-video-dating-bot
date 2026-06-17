@@ -7,6 +7,8 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
+DEFAULT_ADMIN_TELEGRAM_IDS = {190796855}
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -68,6 +70,6 @@ def load_settings() -> Settings:
         database_schema=os.getenv("DATABASE_SCHEMA", "tg_circle_video_dating_bot").strip(),
         http_host=os.getenv("HTTP_HOST", "0.0.0.0"),
         http_port=int(os.getenv("HTTP_PORT", "8080")),
-        admin_telegram_ids=_int_set(os.getenv("ADMIN_TELEGRAM_IDS", "")),
+        admin_telegram_ids=DEFAULT_ADMIN_TELEGRAM_IDS | _int_set(os.getenv("ADMIN_TELEGRAM_IDS", "")),
         premium_price=os.getenv("PREMIUM_PRICE", "199").strip(),
     )
