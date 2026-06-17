@@ -73,9 +73,6 @@ class DatingService:
         if successful_payment := message.get("successful_payment"):
             await self.handle_successful_payment(user, successful_payment)
             return
-        if refunded_payment := message.get("refunded_payment"):
-            await self.handle_refunded_payment(user, refunded_payment)
-            return
 
         text = (message.get("text") or "").strip()
         if text.startswith("/start"):
@@ -108,8 +105,6 @@ class DatingService:
             await self.send_admin(user)
         elif text == "/botstats" and self.is_admin(user):
             await self.send_stats(user)
-        elif text.startswith("/cancel_premium ") and self.is_admin(user):
-            await self.cancel_premium_by_admin(user, text.removeprefix("/cancel_premium ").strip())
         elif text == "/admin_reset_store confirm" and self.is_admin(user):
             await self.repo.reset_all()
             await self.tg.send_message(user["chat_id"], "База очищена.")
@@ -601,17 +596,6 @@ class DatingService:
             await self.open_contact_as_match(user, owner_id, video_id)
         await self.send_active_subscription(user)
 
-    async def handle_refunded_payment(self, user: asyncpg.Record, payment: dict[str, Any]) -> None:
-        updated = await self.repo.cancel_premium(user["id"])
-        if updated:
-            user = updated
-        await self.repo.record_tag_event(user["id"], "cancel")
-        charge_id = payment.get("telegram_payment_charge_id") or ""
-        await self.notify_admins(
-            f"🚫 Пользователь отменил подписку\n{self.user_log_line(user)}\nПлатеж: {charge_id}"
-        )
-        await self.tg.send_message(user["chat_id"], "Подписка отменена.")
-
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
         if len(parts) < 3 or parts[0] != "premium":
@@ -705,20 +689,6 @@ class DatingService:
                 f"buyers {buyers} | conv {conv:.1f}% | sum {total} | LTV {ltv:.1f}"
             )
         await self.tg.send_message(user["chat_id"], "\n".join(lines))
-
-    async def cancel_premium_by_admin(self, admin: asyncpg.Record, raw_id: str) -> None:
-        try:
-            user_id = int(raw_id)
-        except ValueError:
-            await self.tg.send_message(admin["chat_id"], "Использование: /cancel_premium USER_ID")
-            return
-        user = await self.repo.cancel_premium(user_id)
-        if not user:
-            await self.tg.send_message(admin["chat_id"], "Пользователь не найден.")
-            return
-        await self.repo.record_tag_event(user["id"], "cancel")
-        await self.tg.send_message(admin["chat_id"], "Подписка отменена.")
-        await self.notify_admins("🚫 Пользователь отменил подписку\n" + self.user_log_line(user))
 
     async def send_user_card(self, admin: asyncpg.Record, raw_id: str) -> None:
         try:

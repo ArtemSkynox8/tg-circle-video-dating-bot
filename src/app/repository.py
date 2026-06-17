@@ -194,20 +194,6 @@ class Repository:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = $2, updated_at = now() WHERE id = $1", user_id, is_premium)
 
-    async def cancel_premium(self, user_id: int) -> asyncpg.Record | None:
-        async with self.pool.acquire() as conn:
-            return await conn.fetchrow(
-                """
-                UPDATE users
-                SET is_premium = FALSE,
-                    premium_expires_at = now(),
-                    updated_at = now()
-                WHERE id = $1
-                RETURNING *
-                """,
-                user_id,
-            )
-
     async def grant_premium_days(self, user_id: int, days: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
