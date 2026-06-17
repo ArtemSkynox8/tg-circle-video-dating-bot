@@ -99,7 +99,7 @@ def match_actions(matched_user_id: int, can_get_contact: bool, url: str | None) 
 def subscription() -> list[list[dict]]:
     return [
         [button("🎲 Открыть рандомный контакт", "open_random_contact")],
-        [button("🔥 1 ⭐ / 3 дня", "premium_3_days")],
+        [button("🔥 49 ⭐ / 3 дня", "premium_3_days")],
         [button("💎 199 ⭐ / неделя", "premium_week")],
         [button("☰ Главное меню", "main_menu")],
     ]
@@ -107,7 +107,7 @@ def subscription() -> list[list[dict]]:
 
 def subscription_for(video_id: int, owner_id: int) -> list[list[dict]]:
     return [
-        [button("🔥 1 ⭐ / 3 дня", f"premium_3_days:{video_id}:{owner_id}")],
+        [button("🔥 49 ⭐ / 3 дня", f"premium_3_days:{video_id}:{owner_id}")],
         [button("💎 199 ⭐ / неделя", f"premium_week:{video_id}:{owner_id}")],
         [button("▶️ Продолжить просмотр", f"continue_after_offer:{video_id}:{owner_id}")],
         [button("☰ Главное меню", "main_menu")],

@@ -37,7 +37,7 @@ class PremiumPlan:
 
 
 PREMIUM_PLANS = {
-    "3_days": PremiumPlan("3_days", "Premium на 3 дня", 1, 3),
+    "3_days": PremiumPlan("3_days", "Premium на 3 дня", 49, 3),
     "week": PremiumPlan("week", "Premium на неделю", 199, 7),
 }
 
@@ -616,7 +616,7 @@ class DatingService:
                     "",
                     "<b>Подписка с автосписанием:</b>",
                     "• 🎁 Пригласить друга — получить 1 рандомный контакт из последних 10 кружков;",
-                    "• 🔥 1 ⭐ / 3 дня;",
+                    "• 🔥 49 ⭐ / 3 дня;",
                     "• 💎 199 ⭐ / неделя.",
                     "",
                     f'Переходя к оплате, вы соглашаетесь с <a href="{offer_url}">офертой</a>.',
