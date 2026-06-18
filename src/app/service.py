@@ -13,6 +13,7 @@ import asyncpg
 from app import keyboards
 from app.repository import Repository
 from app.telegram import TelegramClient, remove_keyboard, request_contact_markup
+from app.video_moderation import has_face_in_first_seconds
 
 
 STATE_AWAITING_NAME = "awaiting_name"
@@ -22,6 +23,8 @@ STATE_AWAITING_VIDEO = "awaiting_video"
 STATE_AWAITING_REWRITE_VIDEO = "awaiting_rewrite_video"
 STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
+MIN_CIRCLE_DURATION_SECONDS = 3
+MAX_CIRCLE_DURATION_SECONDS = 30
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 STARS_CURRENCY = "XTR"
@@ -206,7 +209,7 @@ class DatingService:
         elif video_note := message.get("video_note"):
             await self.handle_video(user, video_note, "video_note")
         elif video := message.get("video"):
-            await self.handle_video(user, video, "video")
+            await self.reject_plain_video(user)
         elif user["flow_state"] == STATE_AWAITING_NAME:
             await self.save_name(user, text)
         elif user["flow_state"] == STATE_AWAITING_EDIT_NAME:
@@ -381,11 +384,44 @@ class DatingService:
         if user["flow_state"] not in {STATE_AWAITING_VIDEO, STATE_AWAITING_REWRITE_VIDEO}:
             await self.tg.send_message(user["chat_id"], "Чтобы заменить видео, нажмите «Изменить анкету» -> «Изменить видео».", inline_keyboard=keyboards.edit_profile())
             return
+        if media_type != "video_note":
+            await self.reject_plain_video(user)
+            return
         file_id = media["file_id"]
         duration = int(media.get("duration") or 0)
+        if duration < MIN_CIRCLE_DURATION_SECONDS:
+            await self.tg.send_message(user["chat_id"], "Кружок слишком короткий. Запишите кружок длиной от 3 до 30 секунд.")
+            return
+        if duration > MAX_CIRCLE_DURATION_SECONDS:
+            await self.tg.send_message(user["chat_id"], "Кружок слишком длинный. Запишите кружок длиной от 3 до 30 секунд.")
+            return
+        await self.tg.send_message(user["chat_id"], "Проверяю кружок: длительность и лицо в первые секунды.")
+        try:
+            video_bytes = await self.tg.download_file(file_id)
+            has_face = await asyncio.to_thread(has_face_in_first_seconds, video_bytes)
+        except Exception as exc:
+            await self.notify_admins(
+                "⚠️ Ошибка модерации кружка\n"
+                + self.user_log_line(user)
+                + f"\nerror: {type(exc).__name__}: {html.escape(str(exc))}"
+            )
+            await self.tg.send_message(user["chat_id"], "Не получилось проверить кружок. Попробуйте отправить его еще раз.")
+            return
+        if not has_face:
+            await self.tg.send_message(
+                user["chat_id"],
+                "На первых секундах не видно лицо. Перезапишите кружок так, чтобы лицо было видно на 1-2 секунде.",
+            )
+            return
         draft = await self.repo.save_video(user["id"], file_id, media_type, duration, active=False)
         await self.tg.send_message(user["chat_id"], "Так будет выглядеть ваш кружок:")
         await self.send_media(user["chat_id"], file_id, media_type, inline_keyboard=keyboards.save_video(draft["id"]))
+
+    async def reject_plain_video(self, user: asyncpg.Record) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            "Принимаю только кружки Telegram. Запишите видео через кнопку кружка в Telegram и отправьте его сюда.",
+        )
 
     async def send_next_candidate(self, user: asyncpg.Record) -> None:
         fresh = await self.repo.get_user(user["id"])

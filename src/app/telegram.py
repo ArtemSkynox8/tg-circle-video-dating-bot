@@ -89,6 +89,15 @@ class TelegramClient:
         self._username = data.get("result", {}).get("username") or ""
         return self._username
 
+    async def download_file(self, file_id: str) -> bytes:
+        data = await self.call("getFile", {"file_id": file_id})
+        file_path = data.get("result", {}).get("file_path")
+        if not file_path:
+            raise RuntimeError("Telegram getFile returned no file_path")
+        response = await self.client.get(f"https://api.telegram.org/file/bot{self.token}/{file_path}")
+        response.raise_for_status()
+        return response.content
+
     async def send_message(
         self,
         chat_id: int,
