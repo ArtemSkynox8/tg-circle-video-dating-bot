@@ -4,7 +4,6 @@ httpx==0.28.1
 asyncpg==0.30.0
 pydantic==2.10.4
 python-dotenv==1.0.1
-mediapipe
-opencv-contrib-python-headless
 imageio-ffmpeg
 Pillow
+numpy
