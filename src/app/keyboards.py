@@ -53,7 +53,7 @@ def browse(video_id: int, owner_id: int, can_write: bool, can_previous: bool = F
 
 def anonymous_video() -> list[list[dict]]:
     return [
-        [button("🙈 Остаться анонимом за 199 ⭐", "anonymous_video_pay")],
+        [button("🙈 Остаться анонимом за 399 ⭐", "anonymous_video_pay")],
         [button("🎥 Перезаписать", "rewrite_video")],
     ]
 

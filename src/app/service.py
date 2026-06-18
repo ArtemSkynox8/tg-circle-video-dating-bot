@@ -25,7 +25,7 @@ STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
 MIN_CIRCLE_DURATION_SECONDS = 3
 MAX_CIRCLE_DURATION_SECONDS = 30
-ANONYMOUS_VIDEO_STARS = 199
+ANONYMOUS_VIDEO_STARS = 399
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 STARS_CURRENCY = "XTR"
@@ -388,7 +388,7 @@ class DatingService:
         await self.repo.set_flow(user["id"], STATE_AWAITING_REWRITE_VIDEO if rewrite else STATE_AWAITING_VIDEO)
         await self.tg.send_message(
             user["chat_id"],
-            "Запишите и отправьте сюда кружок Telegram. В Telegram это нативное видео-сообщение, отдельная страница записи не нужна.",
+            "Запишите и отправьте сюда кружок Telegram.",
         )
 
     async def handle_video(self, user: asyncpg.Record, media: dict[str, Any], media_type: str) -> None:
