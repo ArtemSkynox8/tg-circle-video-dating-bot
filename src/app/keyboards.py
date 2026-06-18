@@ -58,6 +58,19 @@ def anonymous_video() -> list[list[dict]]:
     ]
 
 
+def moderation(video_id: int, owner_id: int) -> list[list[dict]]:
+    return [
+        [button("⏳ Ограничить на сутки", f"moderate_restrict:{video_id}:{owner_id}:24")],
+        [button("⏳ Ограничить на 3 суток", f"moderate_restrict:{video_id}:{owner_id}:72")],
+        [button("⛔ Заблокировать навсегда", f"moderate_block:{video_id}:{owner_id}")],
+        [button("➡️ Следующий без санкций", f"moderate_skip:{video_id}:{owner_id}")],
+    ]
+
+
+def pay_fine(amount: int) -> list[list[dict]]:
+    return [[button(f"💳 Оплатить штраф {amount} ⭐", "pay_fine")]]
+
+
 def report(video_id: int, owner_id: int) -> list[list[dict]]:
     reasons = ["Спам", "18+", "Оскорбления", "Мошенничество", "Другое"]
     return [[button(reason, f"report_reason:{video_id}:{owner_id}:{reason}") for reason in reasons]]

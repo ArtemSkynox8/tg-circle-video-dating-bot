@@ -30,6 +30,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_contact_credits INTEGER NOT 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_rewarded_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS source_tag TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS restriction_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS restriction_penalty_stars INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -81,6 +83,11 @@ CREATE TABLE IF NOT EXISTS reports (
     reason TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolution TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS referral_contact_opens (
     id BIGSERIAL PRIMARY KEY,
@@ -262,6 +269,24 @@ class Repository:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
 
+    async def refresh_user_access(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+            if user and user["status"] == "restricted" and user["restriction_expires_at"] and user["restriction_expires_at"] <= await conn.fetchval("SELECT now()"):
+                user = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET status = 'active',
+                        restriction_expires_at = NULL,
+                        restriction_penalty_stars = 0,
+                        updated_at = now()
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    user_id,
+                )
+            return user
+
     async def set_flow(self, user_id: int, state: str) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET flow_state = $2, updated_at = now() WHERE id = $1", user_id, state)
@@ -275,6 +300,53 @@ class Repository:
                 f"UPDATE users SET {field} = $2, updated_at = now() WHERE id = $1 RETURNING *",
                 user_id,
                 value,
+            )
+
+    async def restrict_user(self, user_id: int, hours: int, penalty_stars: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET status = 'restricted',
+                    restriction_expires_at = now() + make_interval(hours => $2::int),
+                    restriction_penalty_stars = $3,
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
+                hours,
+                penalty_stars,
+            )
+
+    async def block_user(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET status = 'blocked',
+                    restriction_expires_at = NULL,
+                    restriction_penalty_stars = 0,
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
+            )
+
+    async def unblock_user(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET status = 'active',
+                    restriction_expires_at = NULL,
+                    restriction_penalty_stars = 0,
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
             )
 
     async def set_premium(self, user_id: int, is_premium: bool) -> None:
@@ -523,6 +595,75 @@ class Repository:
                 video_id,
                 reason,
             )
+
+    async def next_moderation_report(self) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                WITH target AS (
+                    SELECT video_id, target_user_id, min(created_at) AS first_report_at
+                    FROM reports
+                    WHERE status = 'open' AND video_id IS NOT NULL
+                    GROUP BY video_id, target_user_id
+                    ORDER BY first_report_at
+                    LIMIT 1
+                )
+                SELECT
+                    t.video_id,
+                    t.target_user_id AS owner_id,
+                    t.first_report_at,
+                    count(r.id)::int AS reports_count,
+                    string_agg(DISTINCT r.reason, ', ' ORDER BY r.reason) AS reasons,
+                    v.file_id,
+                    v.media_type,
+                    v.duration,
+                    u.telegram_id,
+                    u.chat_id,
+                    u.username,
+                    u.first_name,
+                    u.name,
+                    u.status,
+                    u.restriction_expires_at
+                FROM target t
+                JOIN reports r ON r.video_id = t.video_id AND r.target_user_id = t.target_user_id AND r.status = 'open'
+                JOIN videos v ON v.id = t.video_id
+                JOIN users u ON u.id = t.target_user_id
+                GROUP BY
+                    t.video_id, t.target_user_id, t.first_report_at,
+                    v.file_id, v.media_type, v.duration,
+                    u.telegram_id, u.chat_id, u.username, u.first_name, u.name, u.status, u.restriction_expires_at
+                """
+            )
+
+    async def resolve_reports(self, video_id: int, target_user_id: int, moderator_user_id: int, resolution: str) -> int:
+        async with self.pool.acquire() as conn:
+            count = int(
+                await conn.fetchval(
+                    """
+                    SELECT count(*)
+                    FROM reports
+                    WHERE status = 'open' AND video_id = $1 AND target_user_id = $2
+                    """,
+                    video_id,
+                    target_user_id,
+                )
+                or 0
+            )
+            await conn.execute(
+                """
+                UPDATE reports
+                SET status = 'resolved',
+                    resolved_at = now(),
+                    resolved_by_user_id = $3,
+                    resolution = $4
+                WHERE status = 'open' AND video_id = $1 AND target_user_id = $2
+                """,
+                video_id,
+                target_user_id,
+                moderator_user_id,
+                resolution,
+            )
+            return count
 
     async def record_tag_event(self, user_id: int, event: str, amount: int = 0) -> None:
         async with self.pool.acquire() as conn:

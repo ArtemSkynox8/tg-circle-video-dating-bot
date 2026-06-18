@@ -26,6 +26,8 @@ MATCHES_PAGE_SIZE = 10
 MIN_CIRCLE_DURATION_SECONDS = 3
 MAX_CIRCLE_DURATION_SECONDS = 30
 ANONYMOUS_VIDEO_STARS = 399
+FINE_24H_STARS = 1
+FINE_72H_STARS = 499
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 STARS_CURRENCY = "XTR"
@@ -91,6 +93,10 @@ class DatingService:
             user = await self.apply_start_tag(user, payload)
         if not existing_user:
             await self.notify_admins("👤 Новый пользователь\n" + self.user_log_line(user))
+        user = await self.repo.refresh_user_access(user["id"]) or user
+        if not self.is_admin(user) and self.access_limited(user):
+            await self.send_access_limited(user)
+            return
 
         if command == "/start":
             payload = command_arg
@@ -191,6 +197,11 @@ class DatingService:
                 await self.admin_list(user)
             else:
                 await self.send_admin_denied(user)
+        elif command == "/moderate":
+            if self.is_admin(user):
+                await self.send_moderation_item(user)
+            else:
+                await self.send_admin_denied(user)
         elif command == "/admin_reset_payments":
             if self.is_admin(user):
                 await self.admin_reset_payments(user, command_arg)
@@ -234,6 +245,10 @@ class DatingService:
         data = callback.get("data") or ""
         parts = data.split(":")
         await self.tg.answer_callback_query(callback["id"])
+        user = await self.repo.refresh_user_access(user["id"]) or user
+        if not self.is_admin(user) and self.access_limited(user) and parts[0] != "pay_fine":
+            await self.send_access_limited(user)
+            return
 
         match parts[0]:
             case "noop":
@@ -305,6 +320,8 @@ class DatingService:
                 await self.send_subscription(user, int(parts[1]), int(parts[2]))
             case "anonymous_video_pay":
                 await self.send_anonymous_video_invoice(user)
+            case "pay_fine":
+                await self.send_fine_invoice(user)
             case "continue_after_offer" if len(parts) == 3:
                 await self.delete_pending_write_circle(user)
                 await self.delete_callback_message(message)
@@ -326,6 +343,14 @@ class DatingService:
                 await self.open_random_contact(user)
             case "offer":
                 await self.send_offer(user)
+            case "moderate_next" if self.is_admin(user):
+                await self.send_moderation_item(user)
+            case "moderate_restrict" if self.is_admin(user) and len(parts) == 4:
+                await self.apply_moderation_restriction(user, int(parts[1]), int(parts[2]), int(parts[3]))
+            case "moderate_block" if self.is_admin(user) and len(parts) == 3:
+                await self.apply_moderation_block(user, int(parts[1]), int(parts[2]))
+            case "moderate_skip" if self.is_admin(user) and len(parts) == 3:
+                await self.skip_moderation_item(user, int(parts[1]), int(parts[2]))
             case "admin" if self.is_admin(user):
                 await self.handle_admin(user, parts)
 
@@ -674,6 +699,66 @@ class DatingService:
         await self.repo.report(user["id"], owner_id, video_id, reason)
         await self.tg.send_message(user["chat_id"], "Жалоба отправлена. Спасибо.", inline_keyboard=keyboards.main_menu())
 
+    async def send_moderation_item(self, admin: asyncpg.Record) -> None:
+        item = await self.repo.next_moderation_report()
+        if not item:
+            await self.tg.send_message(admin["chat_id"], "Открытых жалоб на кружки нет.")
+            return
+        await self.tg.send_message(
+            admin["chat_id"],
+            "\n".join(
+                [
+                    "🛡 Модерация жалобы",
+                    f"Кружок: #{item['video_id']}",
+                    f"Пользователь: #{item['owner_id']} tg={item['telegram_id']} {display_name(item)}",
+                    f"Статус: {item['status']}",
+                    f"Жалоб: {item['reports_count']}",
+                    f"Причины: {item['reasons'] or '-'}",
+                ]
+            ),
+        )
+        await self.send_media(
+            admin["chat_id"],
+            item["file_id"],
+            item["media_type"],
+            inline_keyboard=keyboards.moderation(item["video_id"], item["owner_id"]),
+        )
+
+    async def apply_moderation_restriction(self, admin: asyncpg.Record, video_id: int, owner_id: int, hours: int) -> None:
+        if hours == 24:
+            penalty = FINE_24H_STARS
+            label = "24 часа"
+        elif hours == 72:
+            penalty = FINE_72H_STARS
+            label = "72 часа"
+        else:
+            await self.tg.send_message(admin["chat_id"], "Неизвестный срок ограничения.")
+            return
+        target = await self.repo.restrict_user(owner_id, hours, penalty)
+        count = await self.repo.resolve_reports(video_id, owner_id, admin["id"], f"restricted_{hours}h")
+        await self.tg.send_message(admin["chat_id"], f"Пользователь ограничен на {label}. Закрыто жалоб: {count}.")
+        if target:
+            await self.notify_user_restricted(target, label, penalty)
+
+    async def apply_moderation_block(self, admin: asyncpg.Record, video_id: int, owner_id: int) -> None:
+        target = await self.repo.block_user(owner_id)
+        count = await self.repo.resolve_reports(video_id, owner_id, admin["id"], "blocked")
+        await self.tg.send_message(admin["chat_id"], f"Пользователь заблокирован навсегда. Закрыто жалоб: {count}.")
+        if target:
+            await self.tg.send_message(target["chat_id"], "Ваш доступ к боту заблокирован навсегда.")
+
+    async def skip_moderation_item(self, admin: asyncpg.Record, video_id: int, owner_id: int) -> None:
+        count = await self.repo.resolve_reports(video_id, owner_id, admin["id"], "skipped")
+        await self.tg.send_message(admin["chat_id"], f"Кружок пропущен без санкций. Закрыто жалоб: {count}.")
+        await self.send_moderation_item(admin)
+
+    async def notify_user_restricted(self, user: asyncpg.Record, label: str, penalty: int) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            f"Вас заблокировали на {label}. Вы можете дождаться разблокировки или оплатить штраф и вернуть доступ прямо сейчас.",
+            inline_keyboard=keyboards.pay_fine(penalty),
+        )
+
     async def send_subscription(self, user: asyncpg.Record, video_id: int | None = None, owner_id: int | None = None) -> None:
         fresh = await self.repo.get_user(user["id"]) or user
         if self.premium_active(fresh):
@@ -797,11 +882,34 @@ class DatingService:
             ANONYMOUS_VIDEO_STARS,
         )
 
+    async def send_fine_invoice(self, user: asyncpg.Record) -> None:
+        fresh = await self.repo.refresh_user_access(user["id"]) or user
+        amount = int(fresh["restriction_penalty_stars"] or 0)
+        if fresh["status"] != "restricted" or amount <= 0:
+            await self.tg.send_message(user["chat_id"], "Активного штрафа нет.")
+            return
+        await self.tg.send_invoice(
+            user["chat_id"],
+            "Штраф за разблокировку",
+            "Оплатите штраф, чтобы сразу вернуть доступ к боту.",
+            self.fine_payment_payload(user["id"]),
+            amount,
+        )
+
     async def handle_pre_checkout_query(self, query: dict[str, Any]) -> None:
         payload = query.get("invoice_payload") or ""
         if self.is_anonymous_payment_payload(payload):
             if query.get("currency") != STARS_CURRENCY or int(query.get("total_amount") or 0) != ANONYMOUS_VIDEO_STARS:
                 await self.tg.answer_pre_checkout_query(query["id"], False, "Не удалось проверить оплату. Попробуйте еще раз.")
+                return
+            await self.tg.answer_pre_checkout_query(query["id"], True)
+            return
+        fine_user_id = self.fine_user_id_from_payload(payload)
+        if fine_user_id:
+            fined_user = await self.repo.refresh_user_access(fine_user_id)
+            expected = int(fined_user["restriction_penalty_stars"] or 0) if fined_user else 0
+            if not fined_user or fined_user["status"] != "restricted" or query.get("currency") != STARS_CURRENCY or int(query.get("total_amount") or 0) != expected:
+                await self.tg.answer_pre_checkout_query(query["id"], False, "Не удалось проверить штраф. Попробуйте еще раз.")
                 return
             await self.tg.answer_pre_checkout_query(query["id"], True)
             return
@@ -815,6 +923,9 @@ class DatingService:
         payload = payment.get("invoice_payload") or ""
         if self.is_anonymous_payment_payload(payload):
             await self.handle_anonymous_video_payment(user, payment)
+            return
+        if self.fine_user_id_from_payload(payload):
+            await self.handle_fine_payment(user, payment)
             return
         plan = self.plan_from_payload(payload)
         if not plan or payment.get("currency") != STARS_CURRENCY or int(payment.get("total_amount") or 0) != plan.stars:
@@ -857,6 +968,19 @@ class DatingService:
         await self.tg.send_message(user["chat_id"], "Оплата прошла. Кружок можно сохранить без лица.")
         await self.send_media(user["chat_id"], pending["file_id"], pending["media_type"], inline_keyboard=keyboards.save_video(draft["id"]))
 
+    async def handle_fine_payment(self, user: asyncpg.Record, payment: dict[str, Any]) -> None:
+        fresh = await self.repo.refresh_user_access(user["id"]) or user
+        expected = int(fresh["restriction_penalty_stars"] or 0)
+        if fresh["status"] != "restricted" or payment.get("currency") != STARS_CURRENCY or int(payment.get("total_amount") or 0) != expected:
+            await self.tg.send_message(user["chat_id"], "Платеж получен, но штраф не распознан. Напишите в поддержку.")
+            return
+        updated = await self.repo.unblock_user(user["id"])
+        await self.repo.record_tag_event(user["id"], "purchase", expected)
+        await self.tg.send_message(user["chat_id"], "Штраф оплачен. Доступ к боту восстановлен.", inline_keyboard=keyboards.main_menu())
+        await self.notify_admins(
+            f"💳 Пользователь оплатил штраф\n{self.user_log_line(updated or fresh)}\nСумма: {expected} ⭐"
+        )
+
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
         if len(parts) < 3 or parts[0] != "premium":
@@ -870,6 +994,20 @@ class DatingService:
     @staticmethod
     def is_anonymous_payment_payload(payload: str) -> bool:
         return payload.startswith("anonymous_video:")
+
+    @staticmethod
+    def fine_payment_payload(user_id: int) -> str:
+        return f"fine:{user_id}"
+
+    @staticmethod
+    def fine_user_id_from_payload(payload: str) -> int | None:
+        parts = payload.split(":")
+        if len(parts) != 2 or parts[0] != "fine":
+            return None
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
 
     @staticmethod
     def payment_payload(plan: PremiumPlan, user_id: int, video_id: int | None = None, owner_id: int | None = None) -> str:
@@ -934,6 +1072,7 @@ class DatingService:
                     "/push_stats - диагностика базы и последнего пуша",
                     "/payments - последние оплаты",
                     "/errors - последние ошибки",
+                    "/moderate - модерация жалоб на кружки",
                     "/user id - карточка пользователя",
                     "/admin_add id - добавить админа",
                     "/admin_del id - удалить админа",
@@ -1210,6 +1349,23 @@ class DatingService:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             return expires_at > datetime.now(timezone.utc)
         return bool(user["is_premium"])
+
+    @staticmethod
+    def access_limited(user: asyncpg.Record) -> bool:
+        return user["status"] in {"restricted", "blocked"}
+
+    async def send_access_limited(self, user: asyncpg.Record) -> None:
+        if user["status"] == "blocked":
+            await self.tg.send_message(user["chat_id"], "Ваш доступ к боту заблокирован.")
+            return
+        penalty = int(user["restriction_penalty_stars"] or 0)
+        expires_at = user["restriction_expires_at"]
+        until = format_datetime(expires_at) if expires_at else "позже"
+        await self.tg.send_message(
+            user["chat_id"],
+            f"Вас временно заблокировали до {until}. Вы можете дождаться разблокировки или оплатить штраф и вернуть доступ прямо сейчас.",
+            inline_keyboard=keyboards.pay_fine(penalty) if penalty > 0 else None,
+        )
 
     def premium_status_text(self, user: asyncpg.Record) -> str:
         if not self.premium_active(user):
