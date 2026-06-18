@@ -410,7 +410,7 @@ class DatingService:
         if not has_face:
             await self.tg.send_message(
                 user["chat_id"],
-                "На первых секундах не видно лицо. Перезапишите кружок так, чтобы лицо было видно на 1-2 секунде.",
+                "На первых секундах не видно лицо. Перезапишите кружок так, чтобы лицо было видно на 0.5, 1 и 2 секунде.",
             )
             return
         draft = await self.repo.save_video(user["id"], file_id, media_type, duration, active=False)
