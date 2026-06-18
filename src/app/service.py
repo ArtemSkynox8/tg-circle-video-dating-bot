@@ -25,6 +25,7 @@ STATE_AWAITING_EDIT_NAME = "awaiting_edit_name"
 MATCHES_PAGE_SIZE = 10
 MIN_CIRCLE_DURATION_SECONDS = 3
 MAX_CIRCLE_DURATION_SECONDS = 30
+ANONYMOUS_VIDEO_STARS = 199
 MATCH_MESSAGE_TEXT = "Привет, у нас с тобой взаимный лайк в кружках"
 INVITE_SHARE_TEXT = "Привет! Регистрируйся в боте «Знакомства кружки»: тут знакомятся через короткие видео-кружки."
 STARS_CURRENCY = "XTR"
@@ -57,6 +58,9 @@ class DatingService:
         self.premium_price = premium_price or "199"
         self.pending_write_deletions: dict[int, asyncio.Task] = {}
         self.pending_write_messages: dict[int, tuple[int, int]] = {}
+        self.pending_anonymous_videos: dict[int, dict[str, Any]] = {}
+        self.current_browse: dict[int, dict[str, Any]] = {}
+        self.browse_history: dict[int, list[dict[str, Any]]] = {}
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         if pre_checkout_query := update.get("pre_checkout_query"):
@@ -232,6 +236,8 @@ class DatingService:
         await self.tg.answer_callback_query(callback["id"])
 
         match parts[0]:
+            case "noop":
+                return
             case "browse":
                 await self.send_next_candidate(user)
             case "reset_browse":
@@ -245,6 +251,8 @@ class DatingService:
             case "like" | "like_only" | "next" if len(parts) == 3:
                 action = parts[0]
                 await self.handle_browse_action(user, int(parts[1]), int(parts[2]), action, message)
+            case "prev" if len(parts) == 3:
+                await self.send_previous_candidate(user, message)
             case "report" if len(parts) == 3:
                 await self.tg.send_message(chat_id, "Выберите причину жалобы:", inline_keyboard=keyboards.report(int(parts[1]), int(parts[2])))
             case "report_reason" if len(parts) >= 4:
@@ -295,6 +303,8 @@ class DatingService:
             case "premium_for" if len(parts) == 3:
                 await self.hold_current_circle_for_payment(user, message)
                 await self.send_subscription(user, int(parts[1]), int(parts[2]))
+            case "anonymous_video_pay":
+                await self.send_anonymous_video_invoice(user)
             case "continue_after_offer" if len(parts) == 3:
                 await self.delete_pending_write_circle(user)
                 await self.delete_callback_message(message)
@@ -374,6 +384,7 @@ class DatingService:
         await self.prompt_video(user)
 
     async def prompt_video(self, user: asyncpg.Record, rewrite: bool = False) -> None:
+        self.pending_anonymous_videos.pop(user["id"], None)
         await self.repo.set_flow(user["id"], STATE_AWAITING_REWRITE_VIDEO if rewrite else STATE_AWAITING_VIDEO)
         await self.tg.send_message(
             user["chat_id"],
@@ -408,11 +419,14 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "Не получилось проверить кружок. Попробуйте отправить его еще раз.")
             return
         if not has_face:
+            self.pending_anonymous_videos[user["id"]] = {"file_id": file_id, "media_type": media_type, "duration": duration}
             await self.tg.send_message(
                 user["chat_id"],
-                "На первых секундах не видно лицо. Перезапишите кружок так, чтобы лицо было видно на 0.5, 1 и 2 секунде.",
+                "Перезапишите кружок так, чтобы было видно лицо.",
+                inline_keyboard=keyboards.anonymous_video(),
             )
             return
+        self.pending_anonymous_videos.pop(user["id"], None)
         draft = await self.repo.save_video(user["id"], file_id, media_type, duration, active=False)
         await self.tg.send_message(user["chat_id"], "Так будет выглядеть ваш кружок:")
         await self.send_media(user["chat_id"], file_id, media_type, inline_keyboard=keyboards.save_video(draft["id"]))
@@ -441,17 +455,27 @@ class DatingService:
                 inline_keyboard=keyboards.circles_finished(),
             )
             return
+        await self.send_candidate(fresh, dict(candidate))
+
+    async def send_candidate(self, user: asyncpg.Record, candidate: dict[str, Any]) -> None:
+        self.current_browse[user["id"]] = candidate
         caption = f"{candidate['name']}\nПол: {GENDER_LABELS.get(candidate['gender'], candidate['gender'])}"
-        await self.tg.send_message(fresh["chat_id"], caption)
+        await self.tg.send_message(user["chat_id"], caption)
         await self.send_media(
-            fresh["chat_id"],
+            user["chat_id"],
             candidate["file_id"],
             candidate["media_type"],
-            inline_keyboard=keyboards.browse(candidate["video_id"], candidate["owner_id"], can_write=self.premium_active(fresh)),
+            inline_keyboard=keyboards.browse(
+                candidate["video_id"],
+                candidate["owner_id"],
+                can_write=self.premium_active(user),
+                can_previous=bool(self.browse_history.get(user["id"])),
+            ),
         )
 
     async def handle_browse_action(self, user: asyncpg.Record, video_id: int, owner_id: int, action: str, message: dict[str, Any]) -> None:
         fresh = await self.repo.get_user(user["id"]) or user
+        self.remember_current_candidate(user["id"], video_id)
         if action == "like" and self.premium_active(fresh):
             await self.open_contact_as_match(fresh, owner_id, video_id)
             await self.notify_like(fresh, owner_id, video_id)
@@ -468,6 +492,26 @@ class DatingService:
             await self.delete_callback_message(message)
         await self.complete_referral(user)
         await self.send_next_candidate(user)
+
+    def remember_current_candidate(self, user_id: int, video_id: int) -> None:
+        current = self.current_browse.get(user_id)
+        if not current or int(current.get("video_id") or 0) != video_id:
+            return
+        history = self.browse_history.setdefault(user_id, [])
+        if not history or int(history[-1].get("video_id") or 0) != video_id:
+            history.append(current)
+        if len(history) > 25:
+            del history[:-25]
+
+    async def send_previous_candidate(self, user: asyncpg.Record, message: dict[str, Any]) -> None:
+        history = self.browse_history.get(user["id"]) or []
+        if not history:
+            await self.tg.send_message(user["chat_id"], "Предыдущего кружка пока нет.")
+            return
+        await self.delete_callback_message(message)
+        candidate = history.pop()
+        fresh = await self.repo.get_user(user["id"]) or user
+        await self.send_candidate(fresh, candidate)
 
     async def react_to_browse_message(self, chat_id: int, message: dict[str, Any]) -> None:
         message_id = int(message.get("message_id") or 0)
@@ -741,8 +785,26 @@ class DatingService:
             plan.stars,
         )
 
+    async def send_anonymous_video_invoice(self, user: asyncpg.Record) -> None:
+        if user["id"] not in self.pending_anonymous_videos:
+            await self.tg.send_message(user["chat_id"], "Сначала отправьте кружок, который хотите оставить анонимным.")
+            return
+        await self.tg.send_invoice(
+            user["chat_id"],
+            "Анонимный кружок",
+            "Разрешить публикацию этого кружка без лица.",
+            self.anonymous_payment_payload(user["id"]),
+            ANONYMOUS_VIDEO_STARS,
+        )
+
     async def handle_pre_checkout_query(self, query: dict[str, Any]) -> None:
         payload = query.get("invoice_payload") or ""
+        if self.is_anonymous_payment_payload(payload):
+            if query.get("currency") != STARS_CURRENCY or int(query.get("total_amount") or 0) != ANONYMOUS_VIDEO_STARS:
+                await self.tg.answer_pre_checkout_query(query["id"], False, "Не удалось проверить оплату. Попробуйте еще раз.")
+                return
+            await self.tg.answer_pre_checkout_query(query["id"], True)
+            return
         plan = self.plan_from_payload(payload)
         if not plan or query.get("currency") != STARS_CURRENCY or int(query.get("total_amount") or 0) != plan.stars:
             await self.tg.answer_pre_checkout_query(query["id"], False, "Не удалось проверить тариф. Попробуйте еще раз.")
@@ -751,6 +813,9 @@ class DatingService:
 
     async def handle_successful_payment(self, user: asyncpg.Record, payment: dict[str, Any]) -> None:
         payload = payment.get("invoice_payload") or ""
+        if self.is_anonymous_payment_payload(payload):
+            await self.handle_anonymous_video_payment(user, payment)
+            return
         plan = self.plan_from_payload(payload)
         if not plan or payment.get("currency") != STARS_CURRENCY or int(payment.get("total_amount") or 0) != plan.stars:
             await self.tg.send_message(user["chat_id"], "Платеж получен, но тариф не распознан. Напишите в поддержку.")
@@ -770,11 +835,41 @@ class DatingService:
             await self.open_contact_as_match(user, owner_id, video_id)
         await self.send_active_subscription(user)
 
+    async def handle_anonymous_video_payment(self, user: asyncpg.Record, payment: dict[str, Any]) -> None:
+        if payment.get("currency") != STARS_CURRENCY or int(payment.get("total_amount") or 0) != ANONYMOUS_VIDEO_STARS:
+            await self.tg.send_message(user["chat_id"], "Платеж получен, но сумма не распознана. Напишите в поддержку.")
+            return
+        pending = self.pending_anonymous_videos.pop(user["id"], None)
+        await self.repo.record_tag_event(user["id"], "purchase", ANONYMOUS_VIDEO_STARS)
+        if not pending:
+            await self.tg.send_message(user["chat_id"], "Оплата прошла, но кружок не найден. Отправьте его еще раз.")
+            return
+        draft = await self.repo.save_video(
+            user["id"],
+            pending["file_id"],
+            pending["media_type"],
+            int(pending["duration"]),
+            active=False,
+        )
+        await self.notify_admins(
+            f"🙈 Пользователь оплатил анонимный кружок\n{self.user_log_line(user)}\nСумма: {ANONYMOUS_VIDEO_STARS} ⭐"
+        )
+        await self.tg.send_message(user["chat_id"], "Оплата прошла. Кружок можно сохранить без лица.")
+        await self.send_media(user["chat_id"], pending["file_id"], pending["media_type"], inline_keyboard=keyboards.save_video(draft["id"]))
+
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
         if len(parts) < 3 or parts[0] != "premium":
             return None
         return PREMIUM_PLANS.get(parts[1])
+
+    @staticmethod
+    def anonymous_payment_payload(user_id: int) -> str:
+        return f"anonymous_video:{user_id}"
+
+    @staticmethod
+    def is_anonymous_payment_payload(payload: str) -> bool:
+        return payload.startswith("anonymous_video:")
 
     @staticmethod
     def payment_payload(plan: PremiumPlan, user_id: int, video_id: int | None = None, owner_id: int | None = None) -> str:

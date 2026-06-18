@@ -41,14 +41,21 @@ def preferred_gender() -> list[list[dict]]:
     return [[button("Мужские", "preferred:male"), button("Женские", "preferred:female"), button("Не важно", "preferred:any")]]
 
 
-def browse(video_id: int, owner_id: int, can_write: bool) -> list[list[dict]]:
-    rows = [[button("❤️ Лайк", f"like_only:{video_id}:{owner_id}"), button("⏭ Следующий", f"next:{video_id}:{owner_id}")]]
-    if can_write:
-        rows.append([button("💬 Написать", f"like:{video_id}:{owner_id}")])
-    else:
-        rows.append([button("💬 Написать", f"premium_for:{video_id}:{owner_id}")])
-    rows.append([button("🚨 Пожаловаться", f"report:{video_id}:{owner_id}"), button("☰ Меню", "main_menu")])
-    return rows
+def browse(video_id: int, owner_id: int, can_write: bool, can_previous: bool = False) -> list[list[dict]]:
+    write_action = f"like:{video_id}:{owner_id}" if can_write else f"premium_for:{video_id}:{owner_id}"
+    previous_action = f"prev:{video_id}:{owner_id}" if can_previous else "noop"
+    return [
+        [button("❤️ Лайк", f"like_only:{video_id}:{owner_id}"), button("💬 Написать", write_action)],
+        [button("⬅️ Предыдущий", previous_action), button("⏭ Следующий", f"next:{video_id}:{owner_id}")],
+        [button("🚨 Пожаловаться", f"report:{video_id}:{owner_id}"), button("☰ Меню", "main_menu")],
+    ]
+
+
+def anonymous_video() -> list[list[dict]]:
+    return [
+        [button("🙈 Остаться анонимом за 199 ⭐", "anonymous_video_pay")],
+        [button("🎥 Перезаписать", "rewrite_video")],
+    ]
 
 
 def report(video_id: int, owner_id: int) -> list[list[dict]]:
