@@ -63,6 +63,7 @@ class DatingService:
         self.pending_anonymous_videos: dict[int, dict[str, Any]] = {}
         self.current_browse: dict[int, dict[str, Any]] = {}
         self.browse_history: dict[int, list[dict[str, Any]]] = {}
+        self.browse_caption_messages: dict[int, tuple[int, int]] = {}
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         if pre_checkout_query := update.get("pre_checkout_query"):
@@ -485,7 +486,9 @@ class DatingService:
     async def send_candidate(self, user: asyncpg.Record, candidate: dict[str, Any]) -> None:
         self.current_browse[user["id"]] = candidate
         caption = f"{candidate['name']}\nПол: {GENDER_LABELS.get(candidate['gender'], candidate['gender'])}"
-        await self.tg.send_message(user["chat_id"], caption)
+        caption_message_id = await self.tg.send_message(user["chat_id"], caption)
+        if caption_message_id:
+            self.browse_caption_messages[user["id"]] = (user["chat_id"], caption_message_id)
         await self.send_media(
             user["chat_id"],
             candidate["file_id"],
@@ -510,11 +513,13 @@ class DatingService:
             await self.react_to_browse_message(user["chat_id"], message)
             await asyncio.sleep(1)
             await self.delete_callback_message(message)
+            await self.delete_browse_caption(user["id"])
             if await self.repo.mutual_like(user["id"], owner_id):
                 await self.announce_match(user, owner_id)
         elif action == "next":
             await self.repo.record_action(user["id"], owner_id, video_id, "next")
             await self.delete_callback_message(message)
+            await self.delete_browse_caption(user["id"])
         await self.complete_referral(user)
         await self.send_next_candidate(user)
 
@@ -534,6 +539,7 @@ class DatingService:
             await self.tg.send_message(user["chat_id"], "Предыдущего кружка пока нет.")
             return
         await self.delete_callback_message(message)
+        await self.delete_browse_caption(user["id"])
         candidate = history.pop()
         fresh = await self.repo.get_user(user["id"]) or user
         await self.send_candidate(fresh, candidate)
@@ -547,6 +553,12 @@ class DatingService:
         chat_id = int((message.get("chat") or {}).get("id") or 0)
         message_id = int(message.get("message_id") or 0)
         if chat_id and message_id:
+            await self.tg.delete_message(chat_id, message_id)
+
+    async def delete_browse_caption(self, user_id: int) -> None:
+        pending = self.browse_caption_messages.pop(user_id, None)
+        if pending:
+            chat_id, message_id = pending
             await self.tg.delete_message(chat_id, message_id)
 
     async def hold_current_circle_for_payment(self, user: asyncpg.Record, message: dict[str, Any]) -> None:
