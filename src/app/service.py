@@ -64,6 +64,7 @@ class DatingService:
         self.current_browse: dict[int, dict[str, Any]] = {}
         self.browse_history: dict[int, list[dict[str, Any]]] = {}
         self.browse_caption_messages: dict[int, tuple[int, int]] = {}
+        self.clean_faceless_task: asyncio.Task | None = None
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         if pre_checkout_query := update.get("pre_checkout_query"):
@@ -201,6 +202,11 @@ class DatingService:
         elif command == "/moderate":
             if self.is_admin(user):
                 await self.send_moderation_item(user)
+            else:
+                await self.send_admin_denied(user)
+        elif command == "/clean_faceless":
+            if self.is_admin(user):
+                await self.start_clean_faceless(user)
             else:
                 await self.send_admin_denied(user)
         elif command == "/admin_reset_payments":
@@ -771,6 +777,43 @@ class DatingService:
             inline_keyboard=keyboards.pay_fine(penalty),
         )
 
+    async def start_clean_faceless(self, admin: asyncpg.Record) -> None:
+        if self.clean_faceless_task and not self.clean_faceless_task.done():
+            await self.tg.send_message(admin["chat_id"], "Чистка кружков без лица уже идет.")
+            return
+        await self.tg.send_message(admin["chat_id"], "Запускаю проверку активных кружков. Отчет пришлю сюда.")
+        self.clean_faceless_task = asyncio.create_task(self.clean_faceless_videos(admin["chat_id"]))
+
+    async def clean_faceless_videos(self, admin_chat_id: int) -> None:
+        checked = 0
+        deleted = 0
+        errors = 0
+        try:
+            videos = await self.repo.active_videos_for_face_audit()
+            for video in videos:
+                checked += 1
+                try:
+                    video_bytes = await self.tg.download_file(video["file_id"])
+                    has_face = await asyncio.to_thread(has_face_in_first_seconds, video_bytes)
+                    if has_face:
+                        continue
+                    if await self.repo.delete_video(video["video_id"], video["owner_id"]):
+                        deleted += 1
+                        await self.tg.send_message(
+                            video["chat_id"],
+                            "Ваш кружок был удален, потому что на нем не было видно лица. Перезапишите кружок, и после этого сможете продолжить просмотр ленты.",
+                            inline_keyboard=keyboards.edit_profile(),
+                        )
+                except Exception as exc:
+                    errors += 1
+                    await self.repo.record_error(f"clean_faceless video #{video['video_id']}: {type(exc).__name__}: {exc}")
+            await self.tg.send_message(
+                admin_chat_id,
+                f"Чистка завершена.\nПроверено: {checked}\nУдалено: {deleted}\nОшибок: {errors}",
+            )
+        finally:
+            self.clean_faceless_task = None
+
     async def send_subscription(self, user: asyncpg.Record, video_id: int | None = None, owner_id: int | None = None) -> None:
         fresh = await self.repo.get_user(user["id"]) or user
         if self.premium_active(fresh):
@@ -973,6 +1016,7 @@ class DatingService:
             pending["media_type"],
             int(pending["duration"]),
             active=False,
+            is_anonymous=True,
         )
         await self.notify_admins(
             f"🙈 Пользователь оплатил анонимный кружок\n{self.user_log_line(user)}\nСумма: {ANONYMOUS_VIDEO_STARS} ⭐"
@@ -1085,6 +1129,7 @@ class DatingService:
                     "/payments - последние оплаты",
                     "/errors - последние ошибки",
                     "/moderate - модерация жалоб на кружки",
+                    "/clean_faceless - удалить из выдачи активные кружки без лица",
                     "/user id - карточка пользователя",
                     "/admin_add id - добавить админа",
                     "/admin_del id - удалить админа",

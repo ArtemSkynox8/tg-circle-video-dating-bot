@@ -61,6 +61,7 @@ class TelegramClient:
             {"command": "payments", "description": "Последние оплаты"},
             {"command": "errors", "description": "Последние ошибки"},
             {"command": "moderate", "description": "Модерация жалоб"},
+            {"command": "clean_faceless", "description": "Удалить кружки без лица"},
             {"command": "user", "description": "Карточка пользователя"},
             {"command": "admin_add", "description": "Добавить админа"},
             {"command": "admin_del", "description": "Удалить админа"},

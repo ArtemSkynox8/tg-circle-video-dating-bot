@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS videos (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS actions (
     id BIGSERIAL PRIMARY KEY,
     from_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -382,15 +384,15 @@ class Repository:
                 referrer_user_id,
             )
 
-    async def save_video(self, user_id: int, file_id: str, media_type: str, duration: int, active: bool) -> asyncpg.Record:
+    async def save_video(self, user_id: int, file_id: str, media_type: str, duration: int, active: bool, is_anonymous: bool = False) -> asyncpg.Record:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 if active:
                     await conn.execute("UPDATE videos SET is_active = FALSE WHERE user_id = $1", user_id)
                 return await conn.fetchrow(
                     """
-                    INSERT INTO videos (user_id, file_id, media_type, duration, is_active)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO videos (user_id, file_id, media_type, duration, is_active, is_anonymous)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING *
                     """,
                     user_id,
@@ -398,6 +400,7 @@ class Repository:
                     media_type,
                     duration,
                     active,
+                    is_anonymous,
                 )
 
     async def activate_video(self, user_id: int, video_id: int) -> None:
@@ -409,6 +412,39 @@ class Repository:
     async def active_video(self, user_id: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow("SELECT * FROM videos WHERE user_id = $1 AND is_active = TRUE ORDER BY id DESC LIMIT 1", user_id)
+
+    async def active_videos_for_face_audit(self) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT
+                    v.id AS video_id,
+                    v.file_id,
+                    v.media_type,
+                    v.duration,
+                    u.id AS owner_id,
+                    u.telegram_id,
+                    u.chat_id,
+                    u.username,
+                    u.first_name,
+                    u.name
+                FROM videos v
+                JOIN users u ON u.id = v.user_id
+                WHERE v.is_active = TRUE
+                  AND v.is_anonymous = FALSE
+                  AND u.status = 'active'
+                ORDER BY v.id
+                """
+            )
+
+    async def delete_video(self, video_id: int, owner_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM videos WHERE id = $1 AND user_id = $2",
+                video_id,
+                owner_id,
+            )
+            return result.endswith("1")
 
     async def next_candidate(self, user: asyncpg.Record) -> asyncpg.Record | None:
         preferred = user["preferred_gender"]
