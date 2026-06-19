@@ -1053,6 +1053,9 @@ class DatingService:
                 "owner_id": str(owner_id or ""),
             },
         }
+        receipt = self.yookassa_receipt(user, plan.rubles, plan.title)
+        if receipt:
+            payload["receipt"] = receipt
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 "https://api.yookassa.ru/v3/payments",
@@ -1060,7 +1063,17 @@ class DatingService:
                 auth=(self.yookassa_shop_id, self.yookassa_secret_key),
                 headers={"Idempotence-Key": order_id},
             )
-            response.raise_for_status()
+            if response.is_error:
+                error_text = response.text[:2000]
+                await self.repo.record_error(
+                    f"YooKassa create payment user #{user['id']} status={response.status_code}: {error_text}"
+                )
+                await self.tg.send_message(
+                    user["chat_id"],
+                    "YooKassa не смогла создать платёж. Попробуйте ещё раз через несколько минут. Если ошибка повторится, напишите в поддержку.",
+                    inline_keyboard=keyboards.rub_subscription(video_id, owner_id),
+                )
+                return
             payment = response.json()
         confirmation_url = payment.get("confirmation", {}).get("confirmation_url")
         payment_id = payment.get("id")
@@ -1221,6 +1234,28 @@ class DatingService:
             response.raise_for_status()
             return response.json()
 
+    @staticmethod
+    def yookassa_receipt(user: asyncpg.Record, amount_rub: int, description: str) -> dict[str, Any] | None:
+        raw_phone = str(user["contact_phone"] or "").strip()
+        digits = re.sub(r"\D", "", raw_phone)
+        if len(digits) == 11 and digits.startswith("8"):
+            digits = "7" + digits[1:]
+        if len(digits) < 10:
+            return None
+        return {
+            "customer": {"phone": "+" + digits},
+            "items": [
+                {
+                    "description": description[:128],
+                    "quantity": "1.00",
+                    "amount": {"value": f"{amount_rub:.2f}", "currency": "RUB"},
+                    "vat_code": 1,
+                    "payment_mode": "full_payment",
+                    "payment_subject": "service",
+                }
+            ],
+        }
+
     async def unsubscribe_ruble_subscription(self, user: asyncpg.Record) -> None:
         fresh = await self.repo.get_user(user["id"]) or user
         if fresh["premium_source"] != "rub" or not fresh["premium_autorenew"]:
@@ -1283,6 +1318,9 @@ class DatingService:
                     "reason": "renewal",
                 },
             }
+            receipt = self.yookassa_receipt(user, plan.rubles, "Premium на неделю — автопродление")
+            if receipt:
+                payload["receipt"] = receipt
             try:
                 async with httpx.AsyncClient(timeout=20) as client:
                     response = await client.post(
