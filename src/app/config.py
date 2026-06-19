@@ -22,6 +22,8 @@ class Settings:
     admin_telegram_ids: set[int]
     admin_claim_secret: str
     premium_price: str
+    yookassa_shop_id: str
+    yookassa_secret_key: str
 
 
 def _int_set(value: str) -> set[int]:
@@ -74,4 +76,6 @@ def load_settings() -> Settings:
         admin_telegram_ids=DEFAULT_ADMIN_TELEGRAM_IDS | _int_set(os.getenv("ADMIN_TELEGRAM_IDS", "")),
         admin_claim_secret=os.getenv("ADMIN_CLAIM_SECRET", "секрет").strip(),
         premium_price=os.getenv("PREMIUM_PRICE", "199").strip(),
+        yookassa_shop_id=os.getenv("YOOKASSA_SHOP_ID", "").strip(),
+        yookassa_secret_key=os.getenv("YOOKASSA_SECRET_KEY", "").strip(),
     )

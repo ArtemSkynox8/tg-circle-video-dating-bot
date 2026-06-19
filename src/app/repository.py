@@ -32,6 +32,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS source_tag TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS restriction_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS restriction_penalty_stars INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_source TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -136,6 +137,21 @@ CREATE TABLE IF NOT EXISTS bot_errors (
     id BIGSERIAL PRIMARY KEY,
     error TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS yookassa_payments (
+    id BIGSERIAL PRIMARY KEY,
+    order_id TEXT NOT NULL UNIQUE,
+    payment_id TEXT NOT NULL UNIQUE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_code TEXT NOT NULL,
+    days INTEGER NOT NULL,
+    amount_rub INTEGER NOT NULL,
+    video_id BIGINT,
+    owner_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 """
 
@@ -355,19 +371,34 @@ class Repository:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET is_premium = $2, updated_at = now() WHERE id = $1", user_id, is_premium)
 
-    async def grant_premium_days(self, user_id: int, days: int) -> asyncpg.Record | None:
+    async def grant_premium_days(self, user_id: int, days: int, source: str = "") -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
                 """
                 UPDATE users
                 SET is_premium = TRUE,
                     premium_expires_at = greatest(coalesce(premium_expires_at, now()), now()) + make_interval(days => $2::int),
+                    premium_source = CASE WHEN $3 <> '' THEN $3 ELSE premium_source END,
                     updated_at = now()
                 WHERE id = $1
                 RETURNING *
                 """,
                 user_id,
                 days,
+                source,
+            )
+
+    async def cancel_ruble_subscription(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET premium_source = '',
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
             )
 
     async def set_referrer(self, user_id: int, referrer_user_id: int) -> None:
@@ -715,6 +746,60 @@ class Repository:
                 amount,
             )
 
+    async def create_yookassa_payment(
+        self,
+        order_id: str,
+        payment_id: str,
+        user_id: int,
+        plan_code: str,
+        days: int,
+        amount_rub: int,
+        video_id: int | None,
+        owner_id: int | None,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO yookassa_payments (
+                    order_id, payment_id, user_id, plan_code, days, amount_rub, video_id, owner_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (order_id) DO UPDATE SET
+                    payment_id = EXCLUDED.payment_id,
+                    updated_at = now()
+                """,
+                order_id,
+                payment_id,
+                user_id,
+                plan_code,
+                days,
+                amount_rub,
+                video_id,
+                owner_id,
+            )
+
+    async def get_yookassa_payment(self, payment_id: str) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow("SELECT * FROM yookassa_payments WHERE payment_id = $1", payment_id)
+
+    async def get_yookassa_payment_by_order(self, order_id: str) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow("SELECT * FROM yookassa_payments WHERE order_id = $1", order_id)
+
+    async def set_yookassa_payment_status(self, payment_id: str, status: str) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE yookassa_payments
+                SET status = $2,
+                    updated_at = now()
+                WHERE payment_id = $1
+                RETURNING *
+                """,
+                payment_id,
+                status,
+            )
+
     async def random_contact_candidate(self, user_id: int) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
             return await conn.fetchrow(
@@ -920,11 +1005,11 @@ class Repository:
                 if user_id is None:
                     count = int(await conn.fetchval("SELECT count(*) FROM tag_events WHERE event = 'purchase'") or 0)
                     await conn.execute("DELETE FROM tag_events WHERE event = 'purchase'")
-                    await conn.execute("UPDATE users SET is_premium = FALSE, premium_expires_at = NULL")
+                    await conn.execute("UPDATE users SET is_premium = FALSE, premium_expires_at = NULL, premium_source = ''")
                     return count
                 count = int(await conn.fetchval("SELECT count(*) FROM tag_events WHERE event = 'purchase' AND user_id = $1", user_id) or 0)
                 await conn.execute("DELETE FROM tag_events WHERE event = 'purchase' AND user_id = $1", user_id)
-                await conn.execute("UPDATE users SET is_premium = FALSE, premium_expires_at = NULL WHERE id = $1", user_id)
+                await conn.execute("UPDATE users SET is_premium = FALSE, premium_expires_at = NULL, premium_source = '' WHERE id = $1", user_id)
                 return count
 
     async def record_error(self, error: str) -> None:

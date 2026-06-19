@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
 from app.config import Settings, load_settings
 from app.repository import Repository
@@ -39,6 +40,9 @@ async def lifespan(_: FastAPI):
         admin_ids,
         state.settings.admin_claim_secret,
         state.settings.premium_price,
+        state.settings.public_base_url,
+        state.settings.yookassa_shop_id,
+        state.settings.yookassa_secret_key,
     )
     logger.info("admin telegram ids loaded: %s", sorted(admin_ids))
 
@@ -90,3 +94,28 @@ async def telegram_webhook(
             logger.exception("failed to record error")
         raise HTTPException(status_code=500, detail="handler error") from None
     return {"status": "ok"}
+
+
+@app.post("/webhook/yookassa")
+async def yookassa_webhook(request: Request) -> dict[str, str]:
+    payload: dict[str, Any] = await request.json()
+    payment = payload.get("object") or {}
+    payment_id = payment.get("id") or ""
+    if payment_id:
+        await state.service.process_yookassa_payment(payment_id=payment_id)
+    return {"status": "ok"}
+
+
+@app.get("/yookassa/return", response_class=HTMLResponse)
+async def yookassa_return(order_id: str = "") -> str:
+    if order_id:
+        await state.service.process_yookassa_payment(order_id=order_id)
+    return """
+    <html>
+      <head><meta charset="utf-8"><title>Оплата</title></head>
+      <body style="font-family: sans-serif; padding: 32px;">
+        <h2>Оплата проверяется</h2>
+        <p>Вернитесь в Telegram. Если оплата прошла, бот пришлет сообщение с активированной подпиской.</p>
+      </body>
+    </html>
+    """

@@ -116,29 +116,54 @@ def match_actions(matched_user_id: int, can_get_contact: bool, url: str | None) 
     return rows
 
 
-def subscription() -> list[list[dict]]:
+def subscription(video_id: int | None = None, owner_id: int | None = None) -> list[list[dict]]:
+    stars_action = f"pay_stars:{video_id}:{owner_id}" if video_id and owner_id else "pay_stars"
+    rub_action = f"pay_rub:{video_id}:{owner_id}" if video_id and owner_id else "pay_rub"
     return [
         [button("🎲 Открыть рандомный контакт", "open_random_contact")],
-        [button("🔥 49 ⭐ / 3 дня", "premium_3_days")],
-        [button("💎 199 ⭐ / неделя", "premium_week")],
+        [button("⭐ Оплатить звездами", stars_action)],
+        [button("₽ Оплатить рублями", rub_action)],
         [button("☰ Главное меню", "main_menu")],
     ]
 
 
 def subscription_for(video_id: int, owner_id: int) -> list[list[dict]]:
     return [
-        [button("🔥 49 ⭐ / 3 дня", f"premium_3_days:{video_id}:{owner_id}")],
-        [button("💎 199 ⭐ / неделя", f"premium_week:{video_id}:{owner_id}")],
+        [button("⭐ Оплатить звездами", f"pay_stars:{video_id}:{owner_id}")],
+        [button("₽ Оплатить рублями", f"pay_rub:{video_id}:{owner_id}")],
         [button("▶️ Продолжить просмотр", f"continue_after_offer:{video_id}:{owner_id}")],
         [button("☰ Главное меню", "main_menu")],
     ]
 
 
-def active_subscription() -> list[list[dict]]:
+def stars_subscription(video_id: int | None = None, owner_id: int | None = None) -> list[list[dict]]:
+    three_days = f"premium_3_days:{video_id}:{owner_id}" if video_id and owner_id else "premium_3_days"
+    week = f"premium_week:{video_id}:{owner_id}" if video_id and owner_id else "premium_week"
     return [
-        [button("▶️ Продолжить просмотр", "browse")],
+        [button("🔥 49 ⭐ / 3 дня", three_days)],
+        [button("💎 199 ⭐ / неделя", week)],
         [button("☰ Главное меню", "main_menu")],
     ]
+
+
+def rub_subscription(video_id: int | None = None, owner_id: int | None = None) -> list[list[dict]]:
+    three_days = f"rub_3_days:{video_id}:{owner_id}" if video_id and owner_id else "rub_3_days"
+    week = f"rub_week:{video_id}:{owner_id}" if video_id and owner_id else "rub_week"
+    return [
+        [button("🔥 49 ₽ / 3 дня", three_days)],
+        [button("💎 299 ₽ / неделя", week)],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
+def active_subscription(can_unsubscribe: bool = False) -> list[list[dict]]:
+    rows = [
+        [button("▶️ Продолжить просмотр", "browse")],
+    ]
+    if can_unsubscribe:
+        rows.append([button("❌ Отписаться", "rub_unsubscribe")])
+    rows.append([button("☰ Главное меню", "main_menu")])
+    return rows
 
 
 def invite_friend(link: str, text: str) -> list[list[dict]]:

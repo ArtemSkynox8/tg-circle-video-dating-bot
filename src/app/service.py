@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
 import asyncpg
+import httpx
 
 from app import keyboards
 from app.repository import Repository
@@ -42,9 +44,22 @@ class PremiumPlan:
     days: int
 
 
+@dataclass(frozen=True)
+class RublePlan:
+    code: str
+    title: str
+    rubles: int
+    days: int
+
+
 PREMIUM_PLANS = {
     "3_days": PremiumPlan("3_days", "Premium на 3 дня", 49, 3),
     "week": PremiumPlan("week", "Premium на неделю", 199, 7),
+}
+
+RUBLE_PLANS = {
+    "3_days": RublePlan("3_days", "Premium на 3 дня", 49, 3),
+    "week": RublePlan("week", "Premium на неделю", 299, 7),
 }
 
 GENDER_LABELS = {"male": "мужской", "female": "женский", "any": "не важно"}
@@ -52,12 +67,25 @@ NAME_RE = re.compile(r"^[\wА-Яа-яЁё -]{2,30}$", re.UNICODE)
 
 
 class DatingService:
-    def __init__(self, repo: Repository, tg: TelegramClient, admin_ids: set[int], admin_claim_secret: str, premium_price: str) -> None:
+    def __init__(
+        self,
+        repo: Repository,
+        tg: TelegramClient,
+        admin_ids: set[int],
+        admin_claim_secret: str,
+        premium_price: str,
+        public_base_url: str,
+        yookassa_shop_id: str,
+        yookassa_secret_key: str,
+    ) -> None:
         self.repo = repo
         self.tg = tg
         self.admin_ids = admin_ids
         self.admin_claim_secret = admin_claim_secret
         self.premium_price = premium_price or "199"
+        self.public_base_url = public_base_url.rstrip("/")
+        self.yookassa_shop_id = yookassa_shop_id
+        self.yookassa_secret_key = yookassa_secret_key
         self.pending_write_deletions: dict[int, asyncio.Task] = {}
         self.pending_write_messages: dict[int, tuple[int, int]] = {}
         self.pending_anonymous_videos: dict[int, dict[str, Any]] = {}
@@ -322,6 +350,16 @@ class DatingService:
                 await self.tg.send_message(chat_id, "Главное меню:", inline_keyboard=keyboards.main_menu())
             case "premium" | "subscription" | "premium_pay_stub":
                 await self.send_subscription(user)
+            case "pay_stars":
+                if len(parts) == 3:
+                    await self.send_stars_plan_choice(user, int(parts[1]), int(parts[2]))
+                else:
+                    await self.send_stars_plan_choice(user)
+            case "pay_rub":
+                if len(parts) == 3:
+                    await self.send_rub_plan_choice(user, int(parts[1]), int(parts[2]))
+                else:
+                    await self.send_rub_plan_choice(user)
             case "premium_for" if len(parts) == 3:
                 await self.hold_current_circle_for_payment(user, message)
                 await self.send_subscription(user, int(parts[1]), int(parts[2]))
@@ -344,6 +382,18 @@ class DatingService:
                     await self.send_stars_invoice(user, PREMIUM_PLANS["week"], int(parts[1]), int(parts[2]))
                 else:
                     await self.send_stars_invoice(user, PREMIUM_PLANS["week"])
+            case "rub_3_days":
+                if len(parts) == 3:
+                    await self.send_yookassa_payment(user, RUBLE_PLANS["3_days"], int(parts[1]), int(parts[2]))
+                else:
+                    await self.send_yookassa_payment(user, RUBLE_PLANS["3_days"])
+            case "rub_week":
+                if len(parts) == 3:
+                    await self.send_yookassa_payment(user, RUBLE_PLANS["week"], int(parts[1]), int(parts[2]))
+                else:
+                    await self.send_yookassa_payment(user, RUBLE_PLANS["week"])
+            case "rub_unsubscribe":
+                await self.unsubscribe_ruble_subscription(user)
             case "invite_friend":
                 await self.send_invite_friend(user)
             case "open_random_contact":
@@ -845,8 +895,22 @@ class DatingService:
                     status_text,
                 ]
             ),
-            inline_keyboard=keyboards.subscription_for(video_id, owner_id) if video_id and owner_id else keyboards.subscription(),
+            inline_keyboard=keyboards.subscription(video_id, owner_id),
             parse_mode="HTML",
+        )
+
+    async def send_stars_plan_choice(self, user: asyncpg.Record, video_id: int | None = None, owner_id: int | None = None) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            "Выберите доступ:",
+            inline_keyboard=keyboards.stars_subscription(video_id, owner_id),
+        )
+
+    async def send_rub_plan_choice(self, user: asyncpg.Record, video_id: int | None = None, owner_id: int | None = None) -> None:
+        await self.tg.send_message(
+            user["chat_id"],
+            "Выберите тип подписки:",
+            inline_keyboard=keyboards.rub_subscription(video_id, owner_id),
         )
 
     async def send_active_subscription(self, user: asyncpg.Record) -> None:
@@ -865,7 +929,7 @@ class DatingService:
                     self.premium_status_text(user),
                 ]
             ),
-            inline_keyboard=keyboards.active_subscription(),
+            inline_keyboard=keyboards.active_subscription(can_unsubscribe=user["premium_source"] == "rub"),
             parse_mode="HTML",
         )
 
@@ -951,6 +1015,61 @@ class DatingService:
             amount,
         )
 
+    async def send_yookassa_payment(
+        self,
+        user: asyncpg.Record,
+        plan: RublePlan,
+        video_id: int | None = None,
+        owner_id: int | None = None,
+    ) -> None:
+        if not self.yookassa_shop_id or not self.yookassa_secret_key:
+            await self.tg.send_message(user["chat_id"], "Оплата рублями временно не настроена.")
+            return
+        order_id = uuid.uuid4().hex
+        return_url = f"{self.public_base_url}/yookassa/return?order_id={quote(order_id, safe='')}"
+        payload = {
+            "amount": {"value": f"{plan.rubles:.2f}", "currency": "RUB"},
+            "capture": True,
+            "confirmation": {"type": "redirect", "return_url": return_url},
+            "description": plan.title,
+            "metadata": {
+                "order_id": order_id,
+                "user_id": str(user["id"]),
+                "plan_code": plan.code,
+                "video_id": str(video_id or ""),
+                "owner_id": str(owner_id or ""),
+            },
+        }
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                "https://api.yookassa.ru/v3/payments",
+                json=payload,
+                auth=(self.yookassa_shop_id, self.yookassa_secret_key),
+                headers={"Idempotence-Key": order_id},
+            )
+            response.raise_for_status()
+            payment = response.json()
+        confirmation_url = payment.get("confirmation", {}).get("confirmation_url")
+        payment_id = payment.get("id")
+        if not confirmation_url or not payment_id:
+            await self.tg.send_message(user["chat_id"], "Не удалось создать платеж. Попробуйте позже.")
+            return
+        await self.repo.create_yookassa_payment(
+            order_id,
+            payment_id,
+            user["id"],
+            plan.code,
+            plan.days,
+            plan.rubles,
+            video_id,
+            owner_id,
+        )
+        await self.tg.send_message(
+            user["chat_id"],
+            "Перейдите к оплате в YooKassa:",
+            inline_keyboard=[[{"text": f"Оплатить {plan.rubles} ₽", "url": confirmation_url}]],
+        )
+
     async def handle_pre_checkout_query(self, query: dict[str, Any]) -> None:
         payload = query.get("invoice_payload") or ""
         if self.is_anonymous_payment_payload(payload):
@@ -986,7 +1105,7 @@ class DatingService:
         if not plan or payment.get("currency") != STARS_CURRENCY or int(payment.get("total_amount") or 0) != plan.stars:
             await self.tg.send_message(user["chat_id"], "Платеж получен, но тариф не распознан. Напишите в поддержку.")
             return
-        updated = await self.repo.grant_premium_days(user["id"], plan.days)
+        updated = await self.repo.grant_premium_days(user["id"], plan.days, source="stars")
         if updated:
             user = updated
         await self.repo.record_tag_event(user["id"], "purchase", plan.stars)
@@ -1036,6 +1155,54 @@ class DatingService:
         await self.notify_admins(
             f"💳 Пользователь оплатил штраф\n{self.user_log_line(updated or fresh)}\nСумма: {expected} ⭐"
         )
+
+    async def process_yookassa_payment(self, payment_id: str | None = None, order_id: str | None = None) -> bool:
+        row = await self.repo.get_yookassa_payment(payment_id) if payment_id else None
+        if not row and order_id:
+            row = await self.repo.get_yookassa_payment_by_order(order_id)
+        if not row:
+            return False
+        if row["status"] == "succeeded":
+            return True
+        payment = await self.fetch_yookassa_payment(row["payment_id"])
+        status = payment.get("status") or ""
+        if status != "succeeded":
+            await self.repo.set_yookassa_payment_status(row["payment_id"], status or "unknown")
+            return False
+        updated = await self.repo.grant_premium_days(row["user_id"], int(row["days"]), source="rub")
+        await self.repo.record_tag_event(row["user_id"], "purchase", int(row["amount_rub"]))
+        await self.repo.set_yookassa_payment_status(row["payment_id"], "succeeded")
+        user = updated or await self.repo.get_user(row["user_id"])
+        if user:
+            await self.tg.send_message(user["chat_id"], "Оплата прошла. Подписка активирована.", inline_keyboard=keyboards.active_subscription(can_unsubscribe=True))
+            if row["video_id"] and row["owner_id"]:
+                await self.open_contact_as_match(user, int(row["owner_id"]), int(row["video_id"]))
+            await self.notify_admins(
+                f"₽ Пользователь оплатил подписку рублями\n{self.user_log_line(user)}\nТариф: {row['plan_code']}\nСумма: {row['amount_rub']} ₽"
+            )
+        return True
+
+    async def fetch_yookassa_payment(self, payment_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"https://api.yookassa.ru/v3/payments/{payment_id}",
+                auth=(self.yookassa_shop_id, self.yookassa_secret_key),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def unsubscribe_ruble_subscription(self, user: asyncpg.Record) -> None:
+        fresh = await self.repo.get_user(user["id"]) or user
+        if fresh["premium_source"] != "rub":
+            await self.tg.send_message(user["chat_id"], "Активной рублевой подписки нет.", inline_keyboard=keyboards.active_subscription())
+            return
+        updated = await self.repo.cancel_ruble_subscription(user["id"])
+        await self.tg.send_message(
+            user["chat_id"],
+            "Вы отписались. Доступ сохранится до конца оплаченного срока.",
+            inline_keyboard=keyboards.active_subscription(can_unsubscribe=False),
+        )
+        await self.notify_admins("❌ Пользователь отписался от рублевой подписки\n" + self.user_log_line(updated or fresh))
 
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
