@@ -75,7 +75,7 @@ def load_settings() -> Settings:
         http_port=int(os.getenv("HTTP_PORT", "8080")),
         admin_telegram_ids=DEFAULT_ADMIN_TELEGRAM_IDS | _int_set(os.getenv("ADMIN_TELEGRAM_IDS", "")),
         admin_claim_secret=os.getenv("ADMIN_CLAIM_SECRET", "секрет").strip(),
-        premium_price=os.getenv("PREMIUM_PRICE", "199").strip(),
+        premium_price=os.getenv("PREMIUM_PRICE", "299").strip(),
         yookassa_shop_id=os.getenv("YOOKASSA_SHOP_ID", "").strip(),
         yookassa_secret_key=os.getenv("YOOKASSA_SECRET_KEY", "").strip(),
     )

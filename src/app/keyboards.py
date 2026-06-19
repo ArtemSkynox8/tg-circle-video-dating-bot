@@ -121,16 +121,16 @@ def subscription(video_id: int | None = None, owner_id: int | None = None) -> li
     rub_action = f"pay_rub:{video_id}:{owner_id}" if video_id and owner_id else "pay_rub"
     return [
         [button("🎲 Открыть рандомный контакт", "open_random_contact")],
-        [button("⭐ Оплатить звездами", stars_action)],
         [button("₽ Оплатить рублями", rub_action)],
+        [button("⭐ Оплатить звездами", stars_action)],
         [button("☰ Главное меню", "main_menu")],
     ]
 
 
 def subscription_for(video_id: int, owner_id: int) -> list[list[dict]]:
     return [
-        [button("⭐ Оплатить звездами", f"pay_stars:{video_id}:{owner_id}")],
         [button("₽ Оплатить рублями", f"pay_rub:{video_id}:{owner_id}")],
+        [button("⭐ Оплатить звездами", f"pay_stars:{video_id}:{owner_id}")],
         [button("▶️ Продолжить просмотр", f"continue_after_offer:{video_id}:{owner_id}")],
         [button("☰ Главное меню", "main_menu")],
     ]
@@ -141,7 +141,7 @@ def stars_subscription(video_id: int | None = None, owner_id: int | None = None)
     week = f"premium_week:{video_id}:{owner_id}" if video_id and owner_id else "premium_week"
     return [
         [button("🔥 49 ⭐ / 3 дня", three_days)],
-        [button("💎 199 ⭐ / неделя", week)],
+        [button("💎 299 ⭐ / неделя", week)],
         [button("☰ Главное меню", "main_menu")],
     ]
 
@@ -150,7 +150,7 @@ def rub_subscription(video_id: int | None = None, owner_id: int | None = None) -
     three_days = f"rub_3_days:{video_id}:{owner_id}" if video_id and owner_id else "rub_3_days"
     week = f"rub_week:{video_id}:{owner_id}" if video_id and owner_id else "rub_week"
     return [
-        [button("🔥 49 ₽ / 3 дня", three_days)],
+        [button("⚡ 39 ₽ / 3 дня → 299 ₽ / неделя", three_days)],
         [button("💎 299 ₽ / неделя", week)],
         [button("☰ Главное меню", "main_menu")],
     ]
@@ -164,6 +164,13 @@ def active_subscription(can_unsubscribe: bool = False) -> list[list[dict]]:
         rows.append([button("❌ Отписаться", "rub_unsubscribe")])
     rows.append([button("☰ Главное меню", "main_menu")])
     return rows
+
+
+def cancelled_subscription() -> list[list[dict]]:
+    return [
+        [button("✅ Подключить подписку заново", "subscription")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
 
 
 def invite_friend(link: str, text: str) -> list[list[dict]]:

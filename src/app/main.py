@@ -45,6 +45,7 @@ async def lifespan(_: FastAPI):
         state.settings.yookassa_secret_key,
     )
     logger.info("admin telegram ids loaded: %s", sorted(admin_ids))
+    state.service.start_ruble_autorenew()
 
     if state.settings.telegram_bot_token and state.settings.public_base_url.startswith("https://"):
         webhook_url = f"{state.settings.public_base_url}/webhook/telegram"
@@ -58,6 +59,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await state.service.stop_ruble_autorenew()
         await state.tg.close()
         await state.repo.close()
 

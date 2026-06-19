@@ -33,6 +33,9 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS source_tag TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS restriction_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS restriction_penalty_stars INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_autorenew BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_payment_method_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_next_charge_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS videos (
     id BIGSERIAL PRIMARY KEY,
@@ -153,6 +156,25 @@ CREATE TABLE IF NOT EXISTS yookassa_payments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE yookassa_payments ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT 'initial';
+ALTER TABLE yookassa_payments ADD COLUMN IF NOT EXISTS payment_method_id TEXT NOT NULL DEFAULT '';
+
+-- Older versions "cancelled" a ruble subscription by clearing only its
+-- source. Finish those already-requested cancellations during deployment.
+UPDATE users u
+SET is_premium = FALSE,
+    premium_expires_at = now(),
+    premium_autorenew = FALSE,
+    premium_payment_method_id = '',
+    premium_next_charge_at = NULL,
+    updated_at = now()
+WHERE u.premium_source = ''
+  AND u.premium_expires_at > now()
+  AND EXISTS (
+      SELECT 1
+      FROM yookassa_payments yp
+      WHERE yp.user_id = u.id AND yp.status = 'succeeded'
+  );
 """
 
 
@@ -393,7 +415,12 @@ class Repository:
             return await conn.fetchrow(
                 """
                 UPDATE users
-                SET premium_source = '',
+                SET is_premium = FALSE,
+                    premium_expires_at = now(),
+                    premium_source = '',
+                    premium_autorenew = FALSE,
+                    premium_payment_method_id = '',
+                    premium_next_charge_at = NULL,
                     updated_at = now()
                 WHERE id = $1
                 RETURNING *
@@ -756,14 +783,15 @@ class Repository:
         amount_rub: int,
         video_id: int | None,
         owner_id: int | None,
+        reason: str = "initial",
     ) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO yookassa_payments (
-                    order_id, payment_id, user_id, plan_code, days, amount_rub, video_id, owner_id
+                    order_id, payment_id, user_id, plan_code, days, amount_rub, video_id, owner_id, reason
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (order_id) DO UPDATE SET
                     payment_id = EXCLUDED.payment_id,
                     updated_at = now()
@@ -776,6 +804,95 @@ class Repository:
                 amount_rub,
                 video_id,
                 owner_id,
+                reason,
+            )
+
+    async def complete_yookassa_payment(self, payment_id: str, payment_method_id: str) -> tuple[asyncpg.Record | None, bool]:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                payment = await conn.fetchrow(
+                    "SELECT * FROM yookassa_payments WHERE payment_id = $1 FOR UPDATE",
+                    payment_id,
+                )
+                if not payment:
+                    return None, False
+                if payment["status"] == "succeeded":
+                    return await conn.fetchrow("SELECT * FROM users WHERE id = $1", payment["user_id"]), False
+
+                # If an off-session renewal finishes after the user cancelled,
+                # never resurrect the cancelled subscription from its webhook.
+                if payment["reason"] == "renewal":
+                    enabled = await conn.fetchval(
+                        "SELECT premium_autorenew FROM users WHERE id = $1 FOR UPDATE",
+                        payment["user_id"],
+                    )
+                    if not enabled:
+                        await conn.execute(
+                            "UPDATE yookassa_payments SET status = 'succeeded', payment_method_id = $2, updated_at = now() WHERE payment_id = $1",
+                            payment_id,
+                            payment_method_id,
+                        )
+                        return await conn.fetchrow("SELECT * FROM users WHERE id = $1", payment["user_id"]), False
+
+                user = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET is_premium = TRUE,
+                        premium_expires_at = greatest(coalesce(premium_expires_at, now()), now()) + make_interval(days => $2::int),
+                        premium_source = 'rub',
+                        premium_autorenew = ($3 <> ''),
+                        premium_payment_method_id = CASE WHEN $3 <> '' THEN $3 ELSE premium_payment_method_id END,
+                        premium_next_charge_at = greatest(coalesce(premium_expires_at, now()), now()) + make_interval(days => $2::int),
+                        updated_at = now()
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    payment["user_id"],
+                    int(payment["days"]),
+                    payment_method_id,
+                )
+                await conn.execute(
+                    "UPDATE yookassa_payments SET status = 'succeeded', payment_method_id = $2, updated_at = now() WHERE payment_id = $1",
+                    payment_id,
+                    payment_method_id,
+                )
+                return user, True
+
+    async def due_ruble_subscriptions(self, limit: int = 25) -> list[asyncpg.Record]:
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(
+                """
+                SELECT * FROM users
+                WHERE premium_autorenew = TRUE
+                  AND premium_payment_method_id <> ''
+                  AND premium_next_charge_at <= now()
+                ORDER BY premium_next_charge_at
+                LIMIT $1
+                """,
+                limit,
+            )
+
+    async def postpone_ruble_renewal(self, user_id: int, minutes: int = 15) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET premium_next_charge_at = now() + make_interval(mins => $2::int), updated_at = now() WHERE id = $1 AND premium_autorenew = TRUE",
+                user_id,
+                minutes,
+            )
+
+    async def disable_ruble_autorenew(self, user_id: int) -> asyncpg.Record | None:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                """
+                UPDATE users
+                SET premium_autorenew = FALSE,
+                    premium_payment_method_id = '',
+                    premium_next_charge_at = NULL,
+                    updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                user_id,
             )
 
     async def get_yookassa_payment(self, payment_id: str) -> asyncpg.Record | None:

@@ -54,11 +54,11 @@ class RublePlan:
 
 PREMIUM_PLANS = {
     "3_days": PremiumPlan("3_days", "Premium на 3 дня", 49, 3),
-    "week": PremiumPlan("week", "Premium на неделю", 199, 7),
+    "week": PremiumPlan("week", "Premium на неделю", 299, 7),
 }
 
 RUBLE_PLANS = {
-    "3_days": RublePlan("3_days", "Premium на 3 дня", 49, 3),
+    "3_days": RublePlan("3_days", "Premium на 3 дня, затем 299 ₽ в неделю", 39, 3),
     "week": RublePlan("week", "Premium на неделю", 299, 7),
 }
 
@@ -82,7 +82,7 @@ class DatingService:
         self.tg = tg
         self.admin_ids = admin_ids
         self.admin_claim_secret = admin_claim_secret
-        self.premium_price = premium_price or "199"
+        self.premium_price = premium_price or "299"
         self.public_base_url = public_base_url.rstrip("/")
         self.yookassa_shop_id = yookassa_shop_id
         self.yookassa_secret_key = yookassa_secret_key
@@ -93,6 +93,7 @@ class DatingService:
         self.browse_history: dict[int, list[dict[str, Any]]] = {}
         self.browse_caption_messages: dict[int, tuple[int, int]] = {}
         self.clean_faceless_task: asyncio.Task | None = None
+        self.ruble_autorenew_task: asyncio.Task | None = None
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         if pre_checkout_query := update.get("pre_checkout_query"):
@@ -884,10 +885,11 @@ class DatingService:
                     "• возможность писать первым без взаимного лайка;",
                     "• неограниченный просмотр кружков.",
                     "",
-                    "<b>Подписка с автосписанием:</b>",
+                    "<b>Варианты подписки:</b>",
                     "• 🎁 Пригласить друга — получить 1 рандомный контакт из последних 10 кружков;",
-                    "• 🔥 49 ⭐ / 3 дня;",
-                    "• 💎 199 ⭐ / неделя.",
+                    "• ⭐ звездами: 49 ⭐ / 3 дня или 299 ⭐ / неделя;",
+                    "• ₽ рублями с автосписанием: 39 ₽ / 3 дня, затем 299 ₽ / неделя;",
+                    "• ₽ недельная с автосписанием: 299 ₽ / неделя.",
                     "",
                     f'Переходя к оплате, вы соглашаетесь с <a href="{offer_url}">офертой</a>.',
                     "",
@@ -1030,6 +1032,7 @@ class DatingService:
         payload = {
             "amount": {"value": f"{plan.rubles:.2f}", "currency": "RUB"},
             "capture": True,
+            "save_payment_method": True,
             "confirmation": {"type": "redirect", "return_url": return_url},
             "description": plan.title,
             "metadata": {
@@ -1063,6 +1066,7 @@ class DatingService:
             plan.rubles,
             video_id,
             owner_id,
+            "initial",
         )
         await self.tg.send_message(
             user["chat_id"],
@@ -1169,12 +1173,16 @@ class DatingService:
         if status != "succeeded":
             await self.repo.set_yookassa_payment_status(row["payment_id"], status or "unknown")
             return False
-        updated = await self.repo.grant_premium_days(row["user_id"], int(row["days"]), source="rub")
+        method = payment.get("payment_method") or {}
+        method_is_reusable = bool(method.get("saved")) or row["reason"] == "renewal"
+        payment_method_id = str(method.get("id") or "") if method_is_reusable else ""
+        user, activated = await self.repo.complete_yookassa_payment(row["payment_id"], payment_method_id)
+        if not activated:
+            return True
         await self.repo.record_tag_event(row["user_id"], "purchase", int(row["amount_rub"]))
-        await self.repo.set_yookassa_payment_status(row["payment_id"], "succeeded")
-        user = updated or await self.repo.get_user(row["user_id"])
         if user:
-            await self.tg.send_message(user["chat_id"], "Оплата прошла. Подписка активирована.", inline_keyboard=keyboards.active_subscription(can_unsubscribe=True))
+            renewal_text = " Автопродление подключено." if payment_method_id else " Автопродление недоступно для этого способа оплаты."
+            await self.tg.send_message(user["chat_id"], "Оплата прошла. Подписка активирована." + renewal_text, inline_keyboard=keyboards.active_subscription(can_unsubscribe=True))
             if row["video_id"] and row["owner_id"]:
                 await self.open_contact_as_match(user, int(row["owner_id"]), int(row["video_id"]))
             await self.notify_admins(
@@ -1199,10 +1207,98 @@ class DatingService:
         updated = await self.repo.cancel_ruble_subscription(user["id"])
         await self.tg.send_message(
             user["chat_id"],
-            "Вы отписались. Доступ сохранится до конца оплаченного срока.",
-            inline_keyboard=keyboards.active_subscription(can_unsubscribe=False),
+            "Подписка отменена сразу. Premium-доступ и автосписание отключены. Подписку можно подключить заново прямо сейчас.",
+            inline_keyboard=keyboards.cancelled_subscription(),
         )
         await self.notify_admins("❌ Пользователь отписался от рублевой подписки\n" + self.user_log_line(updated or fresh))
+
+    def start_ruble_autorenew(self) -> None:
+        if self.ruble_autorenew_task is None:
+            self.ruble_autorenew_task = asyncio.create_task(self._ruble_autorenew_loop())
+
+    async def stop_ruble_autorenew(self) -> None:
+        if self.ruble_autorenew_task is None:
+            return
+        self.ruble_autorenew_task.cancel()
+        try:
+            await self.ruble_autorenew_task
+        except asyncio.CancelledError:
+            pass
+        self.ruble_autorenew_task = None
+
+    async def _ruble_autorenew_loop(self) -> None:
+        await asyncio.sleep(10)
+        while True:
+            try:
+                await self.renew_due_ruble_subscriptions()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self.repo.record_error(f"ruble autorenew: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(300)
+
+    async def renew_due_ruble_subscriptions(self) -> None:
+        if not self.yookassa_shop_id or not self.yookassa_secret_key:
+            return
+        plan = RUBLE_PLANS["week"]
+        for user in await self.repo.due_ruble_subscriptions():
+            await self.repo.postpone_ruble_renewal(user["id"])
+            cycle = int(user["premium_expires_at"].timestamp()) if user["premium_expires_at"] else 0
+            order_id = f"renew-{user['id']}-{cycle}"
+            payload = {
+                "amount": {"value": f"{plan.rubles:.2f}", "currency": "RUB"},
+                "capture": True,
+                "payment_method_id": user["premium_payment_method_id"],
+                "description": "Premium на неделю — автопродление",
+                "metadata": {
+                    "order_id": order_id,
+                    "user_id": str(user["id"]),
+                    "plan_code": plan.code,
+                    "reason": "renewal",
+                },
+            }
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    response = await client.post(
+                        "https://api.yookassa.ru/v3/payments",
+                        json=payload,
+                        auth=(self.yookassa_shop_id, self.yookassa_secret_key),
+                        headers={"Idempotence-Key": order_id},
+                    )
+                    response.raise_for_status()
+                    payment = response.json()
+                await self.repo.create_yookassa_payment(
+                    order_id,
+                    payment["id"],
+                    user["id"],
+                    plan.code,
+                    plan.days,
+                    plan.rubles,
+                    None,
+                    None,
+                    "renewal",
+                )
+                if payment.get("status") == "succeeded":
+                    await self.process_yookassa_payment(payment_id=payment["id"])
+                elif payment.get("status") == "canceled":
+                    disabled = await self.repo.disable_ruble_autorenew(user["id"])
+                    await self.tg.send_message(
+                        user["chat_id"],
+                        "Не удалось продлить подписку. Автосписание отключено; подписку можно подключить заново.",
+                        inline_keyboard=keyboards.cancelled_subscription(),
+                    )
+                    await self.notify_admins("⚠️ Не удалось продлить рублевую подписку\n" + self.user_log_line(disabled or user))
+            except httpx.HTTPStatusError as exc:
+                if 400 <= exc.response.status_code < 500:
+                    await self.repo.disable_ruble_autorenew(user["id"])
+                    await self.tg.send_message(
+                        user["chat_id"],
+                        "Не удалось продлить подписку. Автосписание отключено; подписку можно подключить заново.",
+                        inline_keyboard=keyboards.cancelled_subscription(),
+                    )
+                await self.repo.record_error(f"renew rub user #{user['id']}: {type(exc).__name__}: {exc}")
+            except Exception as exc:
+                await self.repo.record_error(f"renew rub user #{user['id']}: {type(exc).__name__}: {exc}")
 
     def plan_from_payload(self, payload: str) -> PremiumPlan | None:
         parts = payload.split(":")
