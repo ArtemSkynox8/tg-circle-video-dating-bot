@@ -177,6 +177,13 @@ def cancelled_subscription() -> list[list[dict]]:
     ]
 
 
+def subscription_purchase_success() -> list[list[dict]]:
+    return [
+        [button("▶️ Продолжить просмотр", "browse")],
+        [button("☰ Главное меню", "main_menu")],
+    ]
+
+
 def invite_friend(link: str, text: str) -> list[list[dict]]:
     share_url = "https://t.me/share/url?url=" + quote(link, safe="") + "&text=" + quote(text, safe="")
     return [

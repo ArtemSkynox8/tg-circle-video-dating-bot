@@ -1218,8 +1218,11 @@ class DatingService:
             return True
         await self.repo.record_tag_event(row["user_id"], "purchase", int(row["amount_rub"]))
         if user:
-            renewal_text = " Автопродление подключено." if payment_method_id else " Автопродление недоступно для этого способа оплаты."
-            await self.tg.send_message(user["chat_id"], "Оплата прошла. Подписка активирована." + renewal_text, inline_keyboard=keyboards.active_subscription(can_unsubscribe=True))
+            await self.tg.send_message(
+                user["chat_id"],
+                "Оплата прошла. Подписка активирована.",
+                inline_keyboard=keyboards.subscription_purchase_success(),
+            )
             if row["video_id"] and row["owner_id"]:
                 await self.open_contact_as_match(user, int(row["owner_id"]), int(row["video_id"]))
             await self.notify_admins(
