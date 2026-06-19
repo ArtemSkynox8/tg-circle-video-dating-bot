@@ -150,7 +150,7 @@ def rub_subscription(video_id: int | None = None, owner_id: int | None = None) -
     three_days = f"rub_3_days:{video_id}:{owner_id}" if video_id and owner_id else "rub_3_days"
     week = f"rub_week:{video_id}:{owner_id}" if video_id and owner_id else "rub_week"
     return [
-        [button("⚡ 39 ₽ / 3 дня → 299 ₽ / неделя", three_days)],
+        [button("⚡ 39 ₽ / 3 дня", three_days)],
         [button("💎 299 ₽ / неделя", week)],
         [button("☰ Главное меню", "main_menu")],
     ]
