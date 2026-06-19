@@ -1678,13 +1678,13 @@ class DatingService:
         await self.tg.send_message(user["chat_id"], "\n".join(lines))
 
     async def send_errors(self, user: asyncpg.Record) -> None:
-        rows = await self.repo.recent_errors()
+        rows = await self.repo.recent_errors(limit=5)
         lines = ["⚠️ Последние ошибки"]
         if not rows:
             lines.append("Ошибок нет.")
         for row in rows:
-            first_line = (row["error"] or "").splitlines()[0][:180]
-            lines.append(f"#{row['id']} {format_datetime(row['created_at'])}: {first_line}")
+            details = " ".join((row["error"] or "").split())[:700]
+            lines.append(f"#{row['id']} {format_datetime(row['created_at'])}: {details}")
         await self.tg.send_message(user["chat_id"], "\n".join(lines))
 
     async def admin_reset_payments(self, user: asyncpg.Record, raw_arg: str) -> None:
