@@ -24,6 +24,7 @@ class Settings:
     premium_price: str
     yookassa_shop_id: str
     yookassa_secret_key: str
+    yookassa_receipt_email: str
 
 
 def _int_set(value: str) -> set[int]:
@@ -78,4 +79,5 @@ def load_settings() -> Settings:
         premium_price=os.getenv("PREMIUM_PRICE", "299").strip(),
         yookassa_shop_id=os.getenv("YOOKASSA_SHOP_ID", "").strip(),
         yookassa_secret_key=os.getenv("YOOKASSA_SECRET_KEY", "").strip(),
+        yookassa_receipt_email=os.getenv("YOOKASSA_RECEIPT_EMAIL", "artem.skynox@yandex.ru").strip(),
     )

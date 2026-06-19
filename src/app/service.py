@@ -77,6 +77,7 @@ class DatingService:
         public_base_url: str,
         yookassa_shop_id: str,
         yookassa_secret_key: str,
+        yookassa_receipt_email: str,
     ) -> None:
         self.repo = repo
         self.tg = tg
@@ -86,6 +87,7 @@ class DatingService:
         self.public_base_url = public_base_url.rstrip("/")
         self.yookassa_shop_id = yookassa_shop_id
         self.yookassa_secret_key = yookassa_secret_key
+        self.yookassa_receipt_email = yookassa_receipt_email
         self.pending_write_deletions: dict[int, asyncio.Task] = {}
         self.pending_write_messages: dict[int, tuple[int, int]] = {}
         self.pending_anonymous_videos: dict[int, dict[str, Any]] = {}
@@ -1234,16 +1236,20 @@ class DatingService:
             response.raise_for_status()
             return response.json()
 
-    @staticmethod
-    def yookassa_receipt(user: asyncpg.Record, amount_rub: int, description: str) -> dict[str, Any] | None:
+    def yookassa_receipt(self, user: asyncpg.Record, amount_rub: int, description: str) -> dict[str, Any] | None:
+        customer: dict[str, str] = {}
+        if self.yookassa_receipt_email:
+            customer["email"] = self.yookassa_receipt_email
         raw_phone = str(user["contact_phone"] or "").strip()
         digits = re.sub(r"\D", "", raw_phone)
         if len(digits) == 11 and digits.startswith("8"):
             digits = "7" + digits[1:]
-        if len(digits) < 10:
+        if 10 <= len(digits) <= 15:
+            customer["phone"] = "+" + digits
+        if not customer:
             return None
         return {
-            "customer": {"phone": "+" + digits},
+            "customer": customer,
             "items": [
                 {
                     "description": description[:128],

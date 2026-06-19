@@ -43,6 +43,7 @@ async def lifespan(_: FastAPI):
         state.settings.public_base_url,
         state.settings.yookassa_shop_id,
         state.settings.yookassa_secret_key,
+        state.settings.yookassa_receipt_email,
     )
     logger.info("admin telegram ids loaded: %s", sorted(admin_ids))
     state.service.start_ruble_autorenew()
