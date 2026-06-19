@@ -156,19 +156,23 @@ def rub_subscription(video_id: int | None = None, owner_id: int | None = None) -
     ]
 
 
-def active_subscription(can_unsubscribe: bool = False) -> list[list[dict]]:
+def active_subscription(can_unsubscribe: bool = False, can_resubscribe: bool = False) -> list[list[dict]]:
     rows = [
         [button("▶️ Продолжить просмотр", "browse")],
     ]
     if can_unsubscribe:
         rows.append([button("❌ Отписаться", "rub_unsubscribe")])
+    if can_resubscribe:
+        rows.append([button("₽ Оплатить рублями", "pay_rub")])
+        rows.append([button("⭐ Оплатить звездами", "pay_stars")])
     rows.append([button("☰ Главное меню", "main_menu")])
     return rows
 
 
 def cancelled_subscription() -> list[list[dict]]:
     return [
-        [button("✅ Подключить подписку заново", "subscription")],
+        [button("₽ Оплатить рублями", "pay_rub")],
+        [button("⭐ Оплатить звездами", "pay_stars")],
         [button("☰ Главное меню", "main_menu")],
     ]
 

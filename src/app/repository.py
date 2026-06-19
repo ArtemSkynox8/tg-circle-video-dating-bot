@@ -159,22 +159,28 @@ CREATE TABLE IF NOT EXISTS yookassa_payments (
 ALTER TABLE yookassa_payments ADD COLUMN IF NOT EXISTS reason TEXT NOT NULL DEFAULT 'initial';
 ALTER TABLE yookassa_payments ADD COLUMN IF NOT EXISTS payment_method_id TEXT NOT NULL DEFAULT '';
 
--- Older versions "cancelled" a ruble subscription by clearing only its
--- source. Finish those already-requested cancellations during deployment.
+-- Restore the paid remainder for subscriptions cancelled by an older version,
+-- which cleared premium_source without marking that only autorenew was off.
+WITH latest_rub AS (
+    SELECT DISTINCT ON (user_id)
+        user_id,
+        yp.created_at + make_interval(days => yp.days) AS paid_until
+    FROM yookassa_payments yp
+    WHERE status = 'succeeded'
+    ORDER BY user_id, created_at DESC
+)
 UPDATE users u
-SET is_premium = FALSE,
-    premium_expires_at = now(),
+SET is_premium = TRUE,
+    premium_expires_at = greatest(coalesce(u.premium_expires_at, lr.paid_until), lr.paid_until),
+    premium_source = 'rub',
     premium_autorenew = FALSE,
     premium_payment_method_id = '',
     premium_next_charge_at = NULL,
     updated_at = now()
-WHERE u.premium_source = ''
-  AND u.premium_expires_at > now()
-  AND EXISTS (
-      SELECT 1
-      FROM yookassa_payments yp
-      WHERE yp.user_id = u.id AND yp.status = 'succeeded'
-  );
+FROM latest_rub lr
+WHERE u.id = lr.user_id
+  AND u.premium_source = ''
+  AND lr.paid_until > now();
 """
 
 
@@ -415,10 +421,7 @@ class Repository:
             return await conn.fetchrow(
                 """
                 UPDATE users
-                SET is_premium = FALSE,
-                    premium_expires_at = now(),
-                    premium_source = '',
-                    premium_autorenew = FALSE,
+                SET premium_autorenew = FALSE,
                     premium_payment_method_id = '',
                     premium_next_charge_at = NULL,
                     updated_at = now()

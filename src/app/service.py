@@ -916,6 +916,13 @@ class DatingService:
         )
 
     async def send_active_subscription(self, user: asyncpg.Record) -> None:
+        rub_autorenew = user["premium_source"] == "rub" and bool(user["premium_autorenew"])
+        rub_cancelled = user["premium_source"] == "rub" and not bool(user["premium_autorenew"])
+        renewal_status = ""
+        if rub_autorenew:
+            renewal_status = "\nАвтосписание: включено"
+        elif rub_cancelled:
+            renewal_status = "\nАвтосписание: отключено — доступ сохранён до конца оплаченного периода"
         await self.tg.send_message(
             user["chat_id"],
             "\n".join(
@@ -928,10 +935,13 @@ class DatingService:
                     "• неограниченный просмотр кружков.",
                     "",
                     "<b>Статус:</b>",
-                    self.premium_status_text(user),
+                    self.premium_status_text(user) + renewal_status,
                 ]
             ),
-            inline_keyboard=keyboards.active_subscription(can_unsubscribe=user["premium_source"] == "rub"),
+            inline_keyboard=keyboards.active_subscription(
+                can_unsubscribe=rub_autorenew,
+                can_resubscribe=rub_cancelled,
+            ),
             parse_mode="HTML",
         )
 
@@ -1070,8 +1080,20 @@ class DatingService:
         )
         await self.tg.send_message(
             user["chat_id"],
-            "Перейдите к оплате в YooKassa:",
-            inline_keyboard=[[{"text": f"Оплатить {plan.rubles} ₽", "url": confirmation_url}]],
+            (
+                "<b>⚡ 39 ₽ / 3 дня (пробный период)</b>\n\n"
+                "💡 Подписка с автосписанием\n"
+                "🔄 После 3-дневного периода:\n"
+                "💎 299 ₽ / неделя\n\n"
+                "Открой оплату по кнопке ниже:"
+                if plan.code == "3_days"
+                else "<b>💎 299 ₽ / неделя</b>\n\nПодписка с еженедельным автосписанием.\n\nОткрой оплату по кнопке ниже:"
+            ),
+            inline_keyboard=[
+                [{"text": "Оплатить", "url": confirmation_url}],
+                [{"text": "⬅️ Назад", "callback_data": "pay_rub"}],
+            ],
+            parse_mode="HTML",
         )
 
     async def handle_pre_checkout_query(self, query: dict[str, Any]) -> None:
@@ -1201,13 +1223,17 @@ class DatingService:
 
     async def unsubscribe_ruble_subscription(self, user: asyncpg.Record) -> None:
         fresh = await self.repo.get_user(user["id"]) or user
-        if fresh["premium_source"] != "rub":
-            await self.tg.send_message(user["chat_id"], "Активной рублевой подписки нет.", inline_keyboard=keyboards.active_subscription())
+        if fresh["premium_source"] != "rub" or not fresh["premium_autorenew"]:
+            await self.tg.send_message(
+                user["chat_id"],
+                "Автосписание уже отключено. Доступ действует до конца оплаченного периода.",
+                inline_keyboard=keyboards.cancelled_subscription(),
+            )
             return
         updated = await self.repo.cancel_ruble_subscription(user["id"])
         await self.tg.send_message(
             user["chat_id"],
-            "Подписка отменена сразу. Premium-доступ и автосписание отключены. Подписку можно подключить заново прямо сейчас.",
+            "Автосписание отключено. Premium-доступ останется активным до конца оплаченного периода. Новую подписку можно купить уже сейчас.",
             inline_keyboard=keyboards.cancelled_subscription(),
         )
         await self.notify_admins("❌ Пользователь отписался от рублевой подписки\n" + self.user_log_line(updated or fresh))
