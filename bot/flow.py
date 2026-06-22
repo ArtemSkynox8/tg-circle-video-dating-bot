@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import discord
 
 from .ai import generate_reply
 from .content import CHARACTER_BY_ID, CHARACTERS, Character
+from .images import generate_photo
 from .store import add_event, get_user, update_store, upsert_user, utc_now
 from .views import BeginSelectionView, ChangeCharacterView, CharacterPickerView, DmHelpView, WelcomeView
 
@@ -127,3 +129,24 @@ async def handle_dm_message(message: discord.Message) -> None:
 
     await update_store(mutate)
     await message.reply(reply)
+
+
+async def handle_generate_photo(interaction: discord.Interaction, prompt: str = "") -> None:
+    user = await get_user(interaction.user.id)
+    character = CHARACTER_BY_ID.get(str((user or {}).get("character_id", "")))
+    if not character:
+        await interaction.response.send_message("Сначала выбери девушку.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    image = await generate_photo(character, prompt)
+    if image is None:
+        await interaction.followup.send("Не получилось создать фото. Проверь `OPENAI_API_KEY` или попробуй ещё раз чуть позже.")
+        return
+    filename = f"{character.id}-photo.jpg"
+    await add_event("photo_generated", {"user_id": str(interaction.user.id), "character_id": character.id})
+    await interaction.followup.send(
+        content=f"**{character.display_name}**\nДержи 📸",
+        file=discord.File(BytesIO(image), filename=filename),
+        view=ChangeCharacterView(),
+    )

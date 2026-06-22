@@ -6,7 +6,7 @@ from discord import app_commands
 
 from .config import config, require_config
 from .content import CHARACTERS
-from .flow import handle_dm_help, handle_dm_message, handle_start_request, send_member_dm_welcome, send_welcome
+from .flow import handle_dm_help, handle_dm_message, handle_generate_photo, handle_start_request, send_member_dm_welcome, send_welcome
 from .views import BeginSelectionView, ChangeCharacterView, CharacterPickerView, DmHelpView, WelcomeView
 
 BOT_PERMISSIONS = 84992
@@ -104,6 +104,12 @@ async def start_command(interaction: discord.Interaction) -> None:
 @client.tree.command(name="dm-help", description="Что делать, если бот не может написать в личку")
 async def dm_help_command(interaction: discord.Interaction) -> None:
     await handle_dm_help(interaction)
+
+
+@client.tree.command(name="photo", description="Попросить выбранную девушку прислать фото")
+@app_commands.describe(description="Какое фото ты хочешь получить")
+async def photo_command(interaction: discord.Interaction, description: str = "") -> None:
+    await handle_generate_photo(interaction, description)
 
 
 @client.tree.command(name="welcome-preview", description="Опубликовать стартовое сообщение в текущем канале")

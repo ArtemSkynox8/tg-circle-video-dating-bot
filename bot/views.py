@@ -77,3 +77,20 @@ class ChangeCharacterView(discord.ui.View):
     async def change(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         from .flow import handle_browse
         await handle_browse(interaction)
+
+    @discord.ui.button(label="Попросить фото", emoji="📸", style=discord.ButtonStyle.primary, custom_id="flow:photo")
+    async def photo(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PhotoPromptModal())
+
+
+class PhotoPromptModal(discord.ui.Modal, title="Какое фото прислать?"):
+    scene = discord.ui.TextInput(
+        label="Опиши фото",
+        placeholder="Например: селфи в кофейне или вечерняя прогулка",
+        required=False,
+        max_length=300,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from .flow import handle_generate_photo
+        await handle_generate_photo(interaction, str(self.scene.value))

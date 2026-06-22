@@ -19,16 +19,25 @@ class DiscordConfig:
 
 
 @dataclass(frozen=True)
-class AIConfig:
+class DeepSeekConfig:
     base_url: str
     api_key: str
     model: str
 
 
 @dataclass(frozen=True)
+class OpenAIImageConfig:
+    api_key: str
+    model: str
+    size: str
+    quality: str
+
+
+@dataclass(frozen=True)
 class Config:
     discord: DiscordConfig
-    ai: AIConfig
+    deepseek: DeepSeekConfig
+    openai_image: OpenAIImageConfig
     data_file: Path
     http_host: str
     http_port: int
@@ -42,10 +51,16 @@ config = Config(
         guild_id=os.getenv("DISCORD_GUILD_ID", "").strip(),
         welcome_channel_id=os.getenv("DISCORD_WELCOME_CHANNEL_ID", "").strip(),
     ),
-    ai=AIConfig(
-        base_url=os.getenv("KIE_BASE_URL", "https://api.kie.ai/v1").rstrip("/"),
-        api_key=os.getenv("KIE_API_KEY", "").strip(),
-        model=os.getenv("KIE_MODEL", "grok-3-mini").strip(),
+    deepseek=DeepSeekConfig(
+        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+        api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip(),
+    ),
+    openai_image=OpenAIImageConfig(
+        api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+        model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5").strip(),
+        size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024").strip(),
+        quality=os.getenv("OPENAI_IMAGE_QUALITY", "medium").strip(),
     ),
     data_file=Path(os.getenv("DATA_FILE", "./data/store.json")),
     http_host=os.getenv("HTTP_HOST", "0.0.0.0").strip(),

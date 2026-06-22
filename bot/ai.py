@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 
 def _request_completion(payload: dict) -> str:
     request = Request(
-        f"{config.ai.base_url}/chat/completions",
+        f"{config.deepseek.base_url}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {config.ai.api_key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {config.deepseek.api_key}", "Content-Type": "application/json"},
         method="POST",
     )
     with urlopen(request, timeout=60) as response:  # noqa: S310 - URL is server configuration
@@ -25,7 +25,7 @@ def _request_completion(payload: dict) -> str:
 
 
 async def generate_reply(character: Character, history: list[dict], user_message: str) -> str:
-    if not config.ai.api_key:
+    if not config.deepseek.api_key:
         return fallback_reply(character, user_message)
 
     messages = [{"role": "system", "content": character_prompt(character)}]
@@ -35,7 +35,7 @@ async def generate_reply(character: Character, history: list[dict], user_message
         if item.get("role") in {"user", "assistant"} and item.get("content")
     )
     messages.append({"role": "user", "content": user_message})
-    payload = {"model": config.ai.model, "messages": messages, "temperature": 0.9, "max_tokens": 500}
+    payload = {"model": config.deepseek.model, "messages": messages, "temperature": 0.9, "max_tokens": 500}
 
     try:
         content = await asyncio.to_thread(_request_completion, payload)
