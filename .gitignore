@@ -4,4 +4,5 @@ __pycache__/
 .tools/
 .env
 data/store.json
+src/data/store.json
 *.log
