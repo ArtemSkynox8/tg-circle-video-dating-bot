@@ -97,3 +97,35 @@ async def add_event(event_type: str, payload: dict[str, Any] | None = None) -> N
         data["events"] = data["events"][-1000:]
 
     await update_store(mutate)
+
+
+async def reserve_photo_slot(user_id: int | str, day: str, limit: int) -> bool:
+    user_key = str(user_id)
+
+    def mutate(data: dict[str, Any]) -> bool:
+        user = data["users"].get(user_key)
+        if not user:
+            return False
+        if user.get("photo_day") != day:
+            user["photo_day"] = day
+            user["photo_count"] = 0
+        count = int(user.get("photo_count", 0))
+        if count >= limit:
+            return False
+        user["photo_count"] = count + 1
+        user["updated_at"] = utc_now()
+        return True
+
+    return await update_store(mutate)
+
+
+async def release_photo_slot(user_id: int | str, day: str) -> None:
+    user_key = str(user_id)
+
+    def mutate(data: dict[str, Any]) -> None:
+        user = data["users"].get(user_key)
+        if user and user.get("photo_day") == day:
+            user["photo_count"] = max(0, int(user.get("photo_count", 0)) - 1)
+            user["updated_at"] = utc_now()
+
+    await update_store(mutate)
