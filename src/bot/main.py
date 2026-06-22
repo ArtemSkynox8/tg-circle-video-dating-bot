@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import discord
 from aiohttp import web
 from discord import app_commands
@@ -10,10 +13,11 @@ from .flow import handle_dm_help, handle_dm_message, handle_generate_photo, hand
 from .views import BeginSelectionView, ChangeCharacterView, CharacterPickerView, DmHelpView, WelcomeView
 
 BOT_PERMISSIONS = 84992
+logger = logging.getLogger(__name__)
 
 
 async def health_response(_: web.Request) -> web.Response:
-    return web.json_response({"status": "ok"})
+    return web.json_response({"status": "ok", "discord_ready": client.is_ready()})
 
 
 def invite_url() -> str:
@@ -28,7 +32,6 @@ class AiGirlBot(discord.Client):
         intents.message_content = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self.health_runner: web.AppRunner | None = None
 
     async def setup_hook(self) -> None:
         self.add_view(WelcomeView())
@@ -37,14 +40,6 @@ class AiGirlBot(discord.Client):
         self.add_view(ChangeCharacterView())
         for index in range(len(CHARACTERS)):
             self.add_view(CharacterPickerView(index))
-
-        app = web.Application()
-        app.router.add_get("/", health_response)
-        app.router.add_get("/healthz", health_response)
-        self.health_runner = web.AppRunner(app)
-        await self.health_runner.setup()
-        await web.TCPSite(self.health_runner, config.http_host, config.http_port).start()
-        print(f"Health server started on {config.http_host}:{config.http_port}")
 
         if config.discord.guild_id:
             guild = discord.Object(id=int(config.discord.guild_id))
@@ -57,12 +52,6 @@ class AiGirlBot(discord.Client):
                 await self.tree.sync()
         else:
             await self.tree.sync()
-
-    async def close(self) -> None:
-        if self.health_runner:
-            await self.health_runner.cleanup()
-        await super().close()
-
 
 client = AiGirlBot()
 
@@ -119,9 +108,24 @@ async def welcome_preview_command(interaction: discord.Interaction) -> None:
         await send_welcome(interaction.channel)  # type: ignore[arg-type]
 
 
+async def run_bot() -> None:
+    app = web.Application()
+    app.router.add_get("/", health_response)
+    app.router.add_get("/healthz", health_response)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, config.http_host, config.http_port).start()
+    print(f"Health server started on {config.http_host}:{config.http_port}", flush=True)
+    try:
+        await client.start(config.discord.token)
+    finally:
+        await runner.cleanup()
+
+
 def main() -> None:
     require_config()
-    client.run(config.discord.token)
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_bot())
 
 
 if __name__ == "__main__":
